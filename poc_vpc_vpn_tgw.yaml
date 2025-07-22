@@ -138,14 +138,26 @@ Resources:
       SubnetId: !Ref SubnetB
       RouteTableId: !Ref RouteTableB
 
-  # Transit Gateway
+ # Transit Gateway
   TransitGateway:
     Type: AWS::EC2::TransitGateway
     Properties:
       Description: PoC Transit Gateway
-      DefaultRouteTableAssociation: enable
-      DefaultRouteTablePropagation: enable
+      DefaultRouteTableAssociation: disable
+      DefaultRouteTablePropagation: disable
 
+# TGW route tables for segmentation
+  TGWRouteTableA:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+
+  TGWRouteTableB:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+
+ # Attachments
   TGWAttachmentA:
     Type: AWS::EC2::TransitGatewayVpcAttachment
     Properties:
@@ -161,6 +173,33 @@ Resources:
       VpcId: !Ref VpcB
       SubnetIds:
         - !Ref SubnetB
+
+# Associate VPCs with TGW route tables
+  TGWAssocA:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentA
+      TransitGatewayRouteTableId: !Ref TGWRouteTableA
+
+  TGWAssocB:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentB
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
+  # Propagation rules
+  TGWPropagateBtoA:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentB
+      TransitGatewayRouteTableId: !Ref TGWRouteTableA
+
+  TGWPropagateAtoB:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentA
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
 
   # Simulated Site-to-Site VPN using Customer Gateway + VPN Connection
   CustomerGateway:
@@ -262,6 +301,10 @@ Outputs:
     Value: !Ref VpcB
   TransitGatewayId:
     Value: !Ref TransitGateway
+  TGWRouteTableAId:
+    Value: !Ref TGWRouteTableA
+  TGWRouteTableBId:
+    Value: !Ref TGWRouteTableB
   VPNConnectionId:
     Value: !Ref VPNConnection
   InstanceAId:
