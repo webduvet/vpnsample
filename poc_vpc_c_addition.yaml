@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: PoC - Site-to-Site VPN between three VPCs (A, B, C) via Transit Gateway
+
+Parameters:
+  VpcACidr:
+    Type: String
+    Default: 10.10.0.0/16
+  VpcBCidr:
+    Type: String
+    Default: 10.20.0.0/16
+  VpcCCidr:
+    Type: String
+    Default: 10.30.0.0/16
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.10.1.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.20.1.0/24
+  PublicSubnetCCidr:
+    Type: String
+    Default: 10.30.1.0/24
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair name for EC2 instance access
+
+Resources:
+
+  # VPC C (Org C)
+  VpcC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-C
+
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcC
+      CidrBlock: !Ref PublicSubnetCCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  InternetGatewayC:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGWToVpcC:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpcC
+      InternetGatewayId: !Ref InternetGatewayC
+
+  RouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcC
+
+  RouteC:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTableC
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGatewayC
+
+  TGWAttachmentC:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref VpcC
+      SubnetIds:
+        - !Ref SubnetC
+
+  TGWRouteToBFromC:
+    Type: AWS::EC2::Route
+    DependsOn:
+      - TransitGateway
+      - TGWAttachmentC
+    Properties:
+      RouteTableId: !Ref RouteTableC
+      DestinationCidrBlock: !Ref VpcBCidr
+      TransitGatewayId: !Ref TransitGateway
+
+  SubnetRouteAssocC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetC
+      RouteTableId: !Ref RouteTableC
+
+  SGAllowAllC:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all traffic from VPC-B
+      VpcId: !Ref VpcC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: !Ref VpcBCidr
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 194.34.235.43/32
+
+  InstanceC:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b
+      SubnetId: !Ref SubnetC
+      SecurityGroupIds:
+        - !Ref SGAllowAllC
+      Tags:
+        - Key: Name
+          Value: EC2-C
+
+Outputs:
+  VpcAId:
+    Value: !Ref VpcA
+  VpcBId:
+    Value: !Ref VpcB
+  VpcCId:
+    Value: !Ref VpcC
+  TransitGatewayId:
+    Value: !Ref TransitGateway
+  VPNConnectionId:
+    Value: !Ref VPNConnection
+  InstanceAId:
+    Value: !Ref InstanceA
+  InstanceBId:
+    Value: !Ref InstanceB
+  InstanceCId:
+    Value: !Ref InstanceC

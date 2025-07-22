@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: PoC - Site-to-Site VPN between two VPCs via Transit Gateway
+
+Parameters:
+  VpcACidr:
+    Type: String
+    Default: 10.10.0.0/16
+  VpcBCidr:
+    Type: String
+    Default: 10.20.0.0/16
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.10.1.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.20.1.0/24
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair name for EC2 instance access
+
+Resources:
+  # [ ... previous unchanged resources ... ]
+
+  # EC2 Instance in VPC A
+  InstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2 AMI (adjust by region)
+      SubnetId: !Ref SubnetA
+      SecurityGroupIds:
+        - !Ref SGAllowAllA
+      Tags:
+        - Key: Name
+          Value: EC2-A
+
+  # EC2 Instance in VPC B
+  InstanceB:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2 AMI (adjust by region)
+      SubnetId: !Ref SubnetB
+      SecurityGroupIds:
+        - !Ref SGAllowAllB
+      Tags:
+        - Key: Name
+          Value: EC2-B
+
+Outputs:
+  VpcAId:
+    Value: !Ref VpcA
+  VpcBId:
+    Value: !Ref VpcB
+  TransitGatewayId:
+    Value: !Ref TransitGateway
+  VPNConnectionId:
+    Value: !Ref VPNConnection
+  InstanceAId:
+    Value: !Ref InstanceA
+  InstanceBId:
+    Value: !Ref InstanceB

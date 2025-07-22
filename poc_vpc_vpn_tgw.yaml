@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: PoC - Site-to-Site VPN between two VPCs via Transit Gateway
+
+Parameters:
+  VpcACidr:
+    Type: String
+    Default: 10.10.0.0/16
+  VpcBCidr:
+    Type: String
+    Default: 10.20.0.0/16
+  VpcCCidr:
+    Type: String
+    Default: 10.30.0.0/16
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.10.1.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.20.1.0/24
+  PublicSubnetCCidr:
+    Type: String
+    Default: 10.30.1.0/24
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair name for EC2 instance access
+
+Resources:
+
+  # VPC A (Org A)
+  VpcA:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcACidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-A
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcA
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  InternetGatewayA:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGWToVpcA:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpcA
+      InternetGatewayId: !Ref InternetGatewayA
+
+  RouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcA
+
+  RouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGatewayA
+
+  TGWRouteToB:
+    Type: AWS::EC2::Route
+    DependsOn:
+      - TransitGateway
+      - TGWAttachmentA
+    Properties:
+      RouteTableId: !Ref RouteTableA
+      DestinationCidrBlock: !Ref VpcBCidr
+      TransitGatewayId: !Ref TransitGateway
+
+  SubnetRouteAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetA
+      RouteTableId: !Ref RouteTableA
+
+  # VPC B (ICE Sim)
+  VpcB:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcBCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-B
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcB
+      CidrBlock: !Ref PublicSubnetBCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  InternetGatewayB:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGWToVpcB:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpcB
+      InternetGatewayId: !Ref InternetGatewayB
+
+  RouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcB
+
+  RouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGatewayB
+
+  TGWRouteToA:
+    Type: AWS::EC2::Route
+    DependsOn:
+      - TransitGateway
+      - TGWAttachmentB
+    Properties:
+      RouteTableId: !Ref RouteTableB
+      DestinationCidrBlock: !Ref VpcACidr
+      TransitGatewayId: !Ref TransitGateway
+
+  SubnetRouteAssocB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetB
+      RouteTableId: !Ref RouteTableB
+
+  # Transit Gateway
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: PoC Transit Gateway
+      DefaultRouteTableAssociation: enable
+      DefaultRouteTablePropagation: enable
+
+  TGWAttachmentA:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref VpcA
+      SubnetIds:
+        - !Ref SubnetA
+
+  TGWAttachmentB:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref VpcB
+      SubnetIds:
+        - !Ref SubnetB
+
+  # Simulated Site-to-Site VPN using Customer Gateway + VPN Connection
+  CustomerGateway:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      BgpAsn: 65000
+      IpAddress: "1.1.1.1"  # placeholder, not used in PoC
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: DummyCGW
+
+  VPNConnection:
+    Type: AWS::EC2::VPNConnection
+    Properties:
+      Type: ipsec.1
+      CustomerGatewayId: !Ref CustomerGateway
+      TransitGatewayId: !Ref TransitGateway
+      StaticRoutesOnly: true
+      VpnTunnelOptionsSpecifications:
+        - PreSharedKey: test123456789
+          TunnelInsideCidr: 169.254.10.0/30
+        - PreSharedKey: test987654321
+          TunnelInsideCidr: 169.254.11.0/30
+
+  # Security groups for testing
+  SGAllowAllA:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all traffic from VPC-B
+      VpcId: !Ref VpcA
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: !Ref VpcBCidr
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 194.34.235.43/32 
+
+  SGAllowAllB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all traffic from VPC-A
+      VpcId: !Ref VpcB
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: !Ref VpcACidr
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 194.34.235.43/32 
+
+  # EC2 Instance in VPC A
+  InstanceA:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b  # Amazon Linux 2 AMI (adjust by region)
+      SubnetId: !Ref SubnetA
+      SecurityGroupIds:
+        - !Ref SGAllowAllA
+      Tags:
+        - Key: Name
+          Value: EC2-A
+
+  # private EC2 Instance in VPC A (for testing), should not be reachable from VPC B
+  InstanceAPrivate:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b  # Amazon Linux 2 AMI (adjust by region)
+      SubnetId: !Ref SubnetA
+      SecurityGroupIds:
+        - !Ref SGAllowAllA
+      Tags:
+        - Key: Name
+          Value: EC2-A-Private
+
+  # EC2 Instance in VPC B
+  InstanceB:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b  # Amazon Linux 2 AMI (adjust by region)
+      SubnetId: !Ref SubnetB
+      SecurityGroupIds:
+        - !Ref SGAllowAllB
+      Tags:
+        - Key: Name
+          Value: EC2-B
+
+Outputs:
+  VpcAId:
+    Value: !Ref VpcA
+  VpcBId:
+    Value: !Ref VpcB
+  TransitGatewayId:
+    Value: !Ref TransitGateway
+  VPNConnectionId:
+    Value: !Ref VPNConnection
+  InstanceAId:
+    Value: !Ref InstanceA
+  InstanceBId:
+    Value: !Ref InstanceB
