@@ -2,13 +2,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: PoC - Site-to-Site VPN between two VPCs via Transit Gateway
 
 Parameters:
-  VpcACidr:
+  TestVpcACidr:
     Type: String
     Default: 10.10.0.0/16
-  VpcBCidr:
+  TestVpcBCidr:
     Type: String
     Default: 10.20.0.0/16
-  VpcCCidr:
+  TestVpcCCidr:
     Type: String
     Default: 10.30.0.0/16
   PublicSubnetACidr:
@@ -27,10 +27,10 @@ Parameters:
 Resources:
 
   # VPC A (Org A)
-  VpcA:
+  TestVpcA:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: !Ref VpcACidr
+      CidrBlock: !Ref TestVpcACidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
@@ -40,7 +40,7 @@ Resources:
   SubnetA:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref VpcA
+      VpcId: !Ref TestVpcA
       CidrBlock: !Ref PublicSubnetACidr
       MapPublicIpOnLaunch: true
       AvailabilityZone: !Select [0, !GetAZs '']
@@ -48,16 +48,16 @@ Resources:
   InternetGatewayA:
     Type: AWS::EC2::InternetGateway
 
-  AttachIGWToVpcA:
+  AttachIGWToTestVpcA:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      VpcId: !Ref VpcA
+      VpcId: !Ref TestVpcA
       InternetGatewayId: !Ref InternetGatewayA
 
   RouteTableA:
     Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref VpcA
+      VpcId: !Ref TestVpcA
 
   RouteA:
     Type: AWS::EC2::Route
@@ -73,7 +73,7 @@ Resources:
       - TGWAttachmentA
     Properties:
       RouteTableId: !Ref RouteTableA
-      DestinationCidrBlock: !Ref VpcBCidr
+      DestinationCidrBlock: !Ref TestVpcBCidr
       TransitGatewayId: !Ref TransitGateway
 
   SubnetRouteAssocA:
@@ -83,10 +83,10 @@ Resources:
       RouteTableId: !Ref RouteTableA
 
   # VPC B (ICE Sim)
-  VpcB:
+  TestVpcB:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: !Ref VpcBCidr
+      CidrBlock: !Ref TestVpcBCidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
@@ -96,7 +96,7 @@ Resources:
   SubnetB:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref VpcB
+      VpcId: !Ref TestVpcB
       CidrBlock: !Ref PublicSubnetBCidr
       MapPublicIpOnLaunch: true
       AvailabilityZone: !Select [0, !GetAZs '']
@@ -104,16 +104,16 @@ Resources:
   InternetGatewayB:
     Type: AWS::EC2::InternetGateway
 
-  AttachIGWToVpcB:
+  AttachIGWToTestVpcB:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      VpcId: !Ref VpcB
+      VpcId: !Ref TestVpcB
       InternetGatewayId: !Ref InternetGatewayB
 
   RouteTableB:
     Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref VpcB
+      VpcId: !Ref TestVpcB
 
   RouteB:
     Type: AWS::EC2::Route
@@ -129,7 +129,7 @@ Resources:
       - TGWAttachmentB
     Properties:
       RouteTableId: !Ref RouteTableB
-      DestinationCidrBlock: !Ref VpcACidr
+      DestinationCidrBlock: !Ref TestVpcACidr
       TransitGatewayId: !Ref TransitGateway
 
   SubnetRouteAssocB:
@@ -138,7 +138,68 @@ Resources:
       SubnetId: !Ref SubnetB
       RouteTableId: !Ref RouteTableB
 
- # Transit Gateway
+  # VPC C (Segmentation Test)
+  TestVpcC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref TestVpcCCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-C
+
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcC
+      CidrBlock: !Ref PublicSubnetCCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  RouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVpcC
+
+  SubnetRouteAssocC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetC
+      RouteTableId: !Ref RouteTableC
+
+  TGWAttachmentC:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref TestVpcC
+      SubnetIds:
+        - !Ref SubnetC
+
+  TGWRouteTableC:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+
+  TGWAssocC:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentC
+      TransitGatewayRouteTableId: !Ref TGWRouteTableC
+
+  TGWPropagateCtoB:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentC
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
+  TGWPropagateBtoC:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentB
+      TransitGatewayRouteTableId: !Ref TGWRouteTableC
+
+  # Transit Gateway
   TransitGateway:
     Type: AWS::EC2::TransitGateway
     Properties:
@@ -146,7 +207,6 @@ Resources:
       DefaultRouteTableAssociation: disable
       DefaultRouteTablePropagation: disable
 
-# TGW route tables for segmentation
   TGWRouteTableA:
     Type: AWS::EC2::TransitGatewayRouteTable
     Properties:
@@ -157,12 +217,11 @@ Resources:
     Properties:
       TransitGatewayId: !Ref TransitGateway
 
- # Attachments
   TGWAttachmentA:
     Type: AWS::EC2::TransitGatewayVpcAttachment
     Properties:
       TransitGatewayId: !Ref TransitGateway
-      VpcId: !Ref VpcA
+      VpcId: !Ref TestVpcA
       SubnetIds:
         - !Ref SubnetA
 
@@ -170,11 +229,10 @@ Resources:
     Type: AWS::EC2::TransitGatewayVpcAttachment
     Properties:
       TransitGatewayId: !Ref TransitGateway
-      VpcId: !Ref VpcB
+      VpcId: !Ref TestVpcB
       SubnetIds:
         - !Ref SubnetB
 
-# Associate VPCs with TGW route tables
   TGWAssocA:
     Type: AWS::EC2::TransitGatewayRouteTableAssociation
     Properties:
@@ -187,7 +245,6 @@ Resources:
       TransitGatewayAttachmentId: !Ref TGWAttachmentB
       TransitGatewayRouteTableId: !Ref TGWRouteTableB
 
-  # Propagation rules
   TGWPropagateBtoA:
     Type: AWS::EC2::TransitGatewayRouteTablePropagation
     Properties:
@@ -200,13 +257,11 @@ Resources:
       TransitGatewayAttachmentId: !Ref TGWAttachmentA
       TransitGatewayRouteTableId: !Ref TGWRouteTableB
 
-
-  # Simulated Site-to-Site VPN using Customer Gateway + VPN Connection
   CustomerGateway:
     Type: AWS::EC2::CustomerGateway
     Properties:
       BgpAsn: 65000
-      IpAddress: "1.1.1.1"  # placeholder, not used in PoC
+      IpAddress: "1.1.1.1"
       Type: ipsec.1
       Tags:
         - Key: Name
@@ -225,40 +280,51 @@ Resources:
         - PreSharedKey: test987654321
           TunnelInsideCidr: 169.254.11.0/30
 
-  # Security groups for testing
   SGAllowAllA:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Allow all traffic from VPC-B
-      VpcId: !Ref VpcA
+      VpcId: !Ref TestVpcA
       SecurityGroupIngress:
         - IpProtocol: -1
-          CidrIp: !Ref VpcBCidr
+          CidrIp: !Ref TestVpcBCidr
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 194.34.235.43/32 
+          CidrIp: 194.34.235.43/32
 
   SGAllowAllB:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Allow all traffic from VPC-A
-      VpcId: !Ref VpcB
+      VpcId: !Ref TestVpcB
       SecurityGroupIngress:
         - IpProtocol: -1
-          CidrIp: !Ref VpcACidr
+          CidrIp: !Ref TestVpcACidr
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 194.34.235.43/32 
+          CidrIp: 194.34.235.43/32
 
-  # EC2 Instance in VPC A
+  SGAllowAllC:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all traffic from VPC-B
+      VpcId: !Ref TestVpcC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: !Ref TestVpcBCidr
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 194.34.235.43/32
+
   InstanceA:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t3.micro
       KeyName: !Ref KeyName
-      ImageId: ami-0152ea7e79f25bb5b  # Amazon Linux 2 AMI (adjust by region)
+      ImageId: ami-0152ea7e79f25bb5b
       SubnetId: !Ref SubnetA
       SecurityGroupIds:
         - !Ref SGAllowAllA
@@ -266,13 +332,12 @@ Resources:
         - Key: Name
           Value: EC2-A
 
-  # private EC2 Instance in VPC A (for testing), should not be reachable from VPC B
   InstanceAPrivate:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t3.micro
       KeyName: !Ref KeyName
-      ImageId: ami-0152ea7e79f25bb5b  # Amazon Linux 2 AMI (adjust by region)
+      ImageId: ami-0152ea7e79f25bb5b
       SubnetId: !Ref SubnetA
       SecurityGroupIds:
         - !Ref SGAllowAllA
@@ -280,13 +345,12 @@ Resources:
         - Key: Name
           Value: EC2-A-Private
 
-  # EC2 Instance in VPC B
   InstanceB:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t3.micro
       KeyName: !Ref KeyName
-      ImageId: ami-0152ea7e79f25bb5b  # Amazon Linux 2 AMI (adjust by region)
+      ImageId: ami-0152ea7e79f25bb5b
       SubnetId: !Ref SubnetB
       SecurityGroupIds:
         - !Ref SGAllowAllB
@@ -294,20 +358,41 @@ Resources:
         - Key: Name
           Value: EC2-B
 
+  InstanceC:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b
+      SubnetId: !Ref SubnetC
+      SecurityGroupIds:
+        - !Ref SGAllowAllC
+      Tags:
+        - Key: Name
+          Value: EC2-C
+
 Outputs:
-  VpcAId:
-    Value: !Ref VpcA
-  VpcBId:
-    Value: !Ref VpcB
+  TestVpcAId:
+    Value: !Ref TestVpcA
+  TestVpcBId:
+    Value: !Ref TestVpcB
+  TestVpcCId:
+    Value: !Ref TestVpcC
   TransitGatewayId:
     Value: !Ref TransitGateway
   TGWRouteTableAId:
     Value: !Ref TGWRouteTableA
   TGWRouteTableBId:
     Value: !Ref TGWRouteTableB
+  TGWRouteTableCId:
+    Value: !Ref TGWRouteTableC
   VPNConnectionId:
     Value: !Ref VPNConnection
   InstanceAId:
     Value: !Ref InstanceA
   InstanceBId:
     Value: !Ref InstanceB
+  InstanceCId:
+    Value: !Ref InstanceC
+  InstanceAPrivateId:
+    Value: !Ref InstanceAPrivate
