@@ -1,0 +1,169 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: PoC - Site-to-Site VPN with unidirectional access to external provider via TGW + NAT
+
+Parameters:
+  # Define the CIDR blocks for each VPC and subnet
+  TestVpcACidr:
+    Type: String
+    Default: 10.10.0.0/16
+  TestVpcBCidr:
+    Type: String
+    Default: 10.20.0.0/16
+  TestVpcCCidr:
+    Type: String
+    Default: 10.30.0.0/16
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.10.1.0/24
+  PrivateSubnetACidr:
+    Type: String
+    Default: 10.10.2.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.20.1.0/24
+  PublicSubnetCCidr:
+    Type: String
+    Default: 10.30.1.0/24
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair name for EC2 instance access
+
+Resources:
+
+  # --- VPC-A: Our Infrastructure ---
+  # Includes public and private subnets with NAT gateway for outbound-only access to VPC-B
+
+  TestVpcA:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref TestVpcACidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-A
+
+  # Public subnet for NAT Gateway and external connectivity
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcA
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: PublicSubnetA
+
+  # Private subnet for EC2 instances that need to access provider via NAT
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcA
+      CidrBlock: !Ref PrivateSubnetACidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: PrivateSubnetA
+
+  # IGW for internet access from public subnet
+  InternetGatewayA:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGWToTestVpcA:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TestVpcA
+      InternetGatewayId: !Ref InternetGatewayA
+
+  # Public route table and default route to internet
+  RouteTablePublicA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVpcA
+
+  RoutePublicA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTablePublicA
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGatewayA
+
+  SubnetRouteAssocPublicA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref RouteTablePublicA
+
+  # Elastic IP for NAT Gateway
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  # NAT Gateway to allow egress-only traffic to external VPN-connected partner (VPC-B)
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnetA
+
+  # Route table for private subnet - routes traffic to provider (VPC-B) via NAT
+  RouteTablePrivateA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVpcA
+
+  RoutePrivateAtoB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTablePrivateA
+      DestinationCidrBlock: !Ref TestVpcBCidr
+      NatGatewayId: !Ref NatGatewayA
+
+  SubnetRouteAssocPrivateA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref RouteTablePrivateA
+
+  # EC2 instance in private subnet simulates your internal service accessing provider
+  InstanceAPrivate:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b
+      SubnetId: !Ref PrivateSubnetA
+      SecurityGroupIds:
+        - !Ref SGAllowAllA
+      Tags:
+        - Key: Name
+          Value: EC2-A-Private
+
+  # Security group allowing only NAT-return traffic and SSH from trusted IP
+  SGAllowAllA:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow NAT or VPN return traffic only
+      VpcId: !Ref TestVpcA
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 84.203.71.87/32
+        - IpProtocol: -1
+          CidrIp: !GetAtt NatEIP.PublicIp
+
+Outputs:
+  # Output references for testing and inspection
+  TestVpcAId:
+    Value: !Ref TestVpcA
+  InstanceAPrivateId:
+    Value: !Ref InstanceAPrivate
+  NatGatewayAId:
+    Value: !Ref NatGatewayA
+  NatEIP:
+    Value: !Ref NatEIP

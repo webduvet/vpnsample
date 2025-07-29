@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: PoC - Site-to-Site VPN between two VPCs via Transit Gateway
 
 Parameters:
+  # Define the CIDR blocks for each VPC and subnet
   TestVpcACidr:
     Type: String
     Default: 10.10.0.0/16
@@ -14,6 +15,9 @@ Parameters:
   PublicSubnetACidr:
     Type: String
     Default: 10.10.1.0/24
+  PrivateSubnetACidr:
+    Type: String
+    Default: 10.10.2.0/24
   PublicSubnetBCidr:
     Type: String
     Default: 10.20.1.0/24
@@ -26,7 +30,9 @@ Parameters:
 
 Resources:
 
-  # VPC A (Org A)
+  # --- VPC-A: Our Infrastructure ---
+  # Includes public and private subnets with NAT gateway for outbound-only access to VPC-B
+
   TestVpcA:
     Type: AWS::EC2::VPC
     Properties:
@@ -291,7 +297,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 194.34.235.43/32
+          CidrIp: 84.203.71.87/32
 
   SGAllowAllB:
     Type: AWS::EC2::SecurityGroup
@@ -304,7 +310,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 194.34.235.43/32
+          CidrIp: 84.203.71.87/32
 
   SGAllowAllC:
     Type: AWS::EC2::SecurityGroup
@@ -317,7 +323,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 194.34.235.43/32
+          CidrIp: 84.203.71.87/32
 
   InstanceA:
     Type: AWS::EC2::Instance

@@ -1,0 +1,115 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Enhanced PoC - Site-to-Site VPN with ICE partner integration and TGW segmentation
+
+# Added NAT Gateway for outbound-only access
+# Ensure ICE conditions:
+#   - B2B IPsec VPN with real CGW IP (replace dummy IP later)
+#   - Publicly registered IPs for exposed services (use 1:1 NAT)
+#   - No ingress to internal VPCs
+#   - Explicit TGW route tables per VPC
+
+# Additional elements to add manually:
+#   - Public IP Elastic IP resource
+#   - EIP and NAT Gateway in VPC-A
+#   - Private subnet for EC2-A-Private
+#   - Update route table to route outbound via NAT Gateway
+#   - Adjust VPN static route propagation if using static VPN
+
+# === Example additions ===
+
+Resources:
+
+  EIPA:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NATGWA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIPA.AllocationId
+      SubnetId: !Ref SubnetA
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcA
+      CidrBlock: !Ref PrivateSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVpcA
+
+  PrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGWA
+
+  PrivateSubnetRouteAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  # Instance moved to private subnet for outbound-only VPN access
+  InstanceAPrivate:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b
+      SubnetId: !Ref PrivateSubnetA
+      SecurityGroupIds:
+        - !Ref SGAllowAllA
+      Tags:
+        - Key: Name
+          Value: EC2-A-Private
+
+  # NAT Gateway route from EC2-A and EC2-C to reach ICE services via VPN
+  TGWPropagateCtoB:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentC
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
+  TGWPropagateAtoB:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentA
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
+  # No TGW propagation from VPC-B to VPC-A or VPC-C (one-way traffic only)
+
+  # Optional: Create VPN Static Route
+  VPNRouteToICE:
+    Type: AWS::EC2::VPNConnectionRoute
+    Properties:
+      DestinationCidrBlock: 10.99.99.0/24  # ICE Service Range
+      VpnConnectionId: !Ref VPNConnection
+
+  # Optional: 1:1 NAT for exposed services to ICE (use Elastic IP)
+  PublicNATForService:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  # Optional security group rule to restrict ICE access
+  SGAllowICEVPN:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Restrict ICE VPN access to exposed ports
+      VpcId: !Ref TestVpcA
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.99.99.0/24
+      Tags:
+        - Key: Name
+          Value: SG-Allow-ICE-HTTPS

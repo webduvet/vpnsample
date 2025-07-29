@@ -1,0 +1,244 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Enhanced PoC - Site-to-Site VPN with ICE partner integration and TGW segmentation
+
+Mappings:
+  TgwRouteTables:
+    A:
+      Name: TGWRouteTableA
+    B:
+      Name: TGWRouteTableB
+    C:
+      Name: TGWRouteTableC
+
+Conditions:
+  CreateTGWPropagateAtoB: !Equals [true, true]
+  CreateTGWPropagateCtoB: !Equals [true, true]
+
+Resources:
+
+  # VPC-A (Our Infrastructure)
+  TestVpcA:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-A
+
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcA
+      CidrBlock: 10.10.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  InternetGatewayA:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGWToTestVpcA:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TestVpcA
+      InternetGatewayId: !Ref InternetGatewayA
+
+  # VPC-B (Simulated ICE)
+  TestVpcB:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-B
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcB
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  InternetGatewayB:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGWToTestVpcB:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TestVpcB
+      InternetGatewayId: !Ref InternetGatewayB
+
+  # VPC-C (Other Org)
+  TestVpcC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.30.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC-C
+
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcC
+      CidrBlock: 10.30.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  # Transit Gateway
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: VPN Hub Transit Gateway
+      DefaultRouteTableAssociation: disable
+      DefaultRouteTablePropagation: disable
+
+  TGWRouteTableA:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+
+  TGWRouteTableB:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+
+  TGWRouteTableC:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+
+  TGWAttachmentA:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref TestVpcA
+      SubnetIds: [!Ref SubnetA]
+
+  TGWAttachmentB:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref TestVpcB
+      SubnetIds: [!Ref SubnetB]
+
+  TGWAttachmentC:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref TestVpcC
+      SubnetIds: [!Ref SubnetC]
+
+  TGWAssocA:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentA
+      TransitGatewayRouteTableId: !Ref TGWRouteTableA
+
+  TGWAssocB:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentB
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
+  TGWAssocC:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentC
+      TransitGatewayRouteTableId: !Ref TGWRouteTableC
+
+  TGWPropagateCtoB:
+    Condition: CreateTGWPropagateCtoB
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentC
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
+  TGWPropagateAtoB:
+    Condition: CreateTGWPropagateAtoB
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachmentA
+      TransitGatewayRouteTableId: !Ref TGWRouteTableB
+
+  EIPA:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NATGWA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIPA.AllocationId
+      SubnetId: !Ref SubnetA
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVpcA
+      CidrBlock: 10.10.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVpcA
+
+  PrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGWA
+
+  PrivateSubnetRouteAssocA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  InstanceAPrivate:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: ami-0152ea7e79f25bb5b
+      SubnetId: !Ref PrivateSubnetA
+      SecurityGroupIds:
+        - !Ref SGAllowAllA
+      Tags:
+        - Key: Name
+          Value: EC2-A-Private
+
+  VPNRouteToICE:
+    Type: AWS::EC2::VPNConnectionRoute
+    Properties:
+      DestinationCidrBlock: 10.99.99.0/24
+      VpnConnectionId: !Ref VPNConnection
+
+  PublicNATForService:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  SGAllowICEVPN:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Restrict ICE VPN access to exposed ports
+      VpcId: !Ref TestVpcA
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.99.99.0/24
+      Tags:
+        - Key: Name
+          Value: SG-Allow-ICE-HTTPS
