@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Org VPC with TGW attachment and EC2 instance for VPN test
+
+Parameters:
+  OrgVpcCidr:
+    Type: String
+    Default: 10.200.0.0/16
+  OrgSubnetCidr:
+    Type: String
+    Default: 10.200.0.0/24
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+
+  OrgVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref OrgVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: Org-VPC
+
+  OrgSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref OrgVpc
+      CidrBlock: !Ref OrgSubnetCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Org-Subnet
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref OrgVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref OrgVpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref OrgSubnet
+      RouteTableId: !Ref RouteTable
+
+  OrgTgwAttachment:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !ImportValue TransitGatewayId
+      VpcId: !Ref OrgVpc
+      SubnetIds:
+        - !Ref OrgSubnet
+      Tags:
+        - Key: Name
+          Value: Org-TGW-Attachment
+
+  TgwRoutePropagation:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref OrgTgwAttachment
+      TransitGatewayRouteTableId: !ImportValue TransitGatewayRouteTableId
+
+  TgwRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 10.99.1.0/24  # ICE Stub subnet range
+      TransitGatewayId: !ImportValue TransitGatewayId
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH and outbound VPN testing
+      VpcId: !Ref OrgVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  TestInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      ImageId: !Ref AmiId
+      SubnetId: !Ref OrgSubnet
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: Org-Test-EC2
+
+Outputs:
+  OrgVpcId:
+    Value: !Ref OrgVpc
+  OrgInstanceId:
+    Value: !Ref TestInstance
+  OrgInstancePublicIp:
+    Value: !GetAtt TestInstance.PublicIp
+    Description: Public IP of EC2 instance to SSH and test VPN access to ICE

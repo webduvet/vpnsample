@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPN VPC with Transit Gateway (TGW) for centralized outbound access to ICE
+
+Parameters:
+  VpnVpcCidr:
+    Type: String
+    Default: 10.100.0.0/16
+  TgwAttachmentSubnetCidr:
+    Type: String
+    Default: 10.100.0.0/24
+  ICECustomerGatewayIp:
+    Type: String
+    Description: The public IP address provided by ICE for VPN
+
+Resources:
+
+  VpnVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpnVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPN-VPC
+
+  TgwAttachmentSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref TgwAttachmentSubnetCidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-VPC-Subnet
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpnVpc
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TgwAttachmentSubnet
+      RouteTableId: !Ref RouteTable
+
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: Central TGW for VPN routing
+      AutoAcceptSharedAttachments: enable
+      DefaultRouteTableAssociation: disable
+      DefaultRouteTablePropagation: disable
+      Tags:
+        - Key: Name
+          Value: CentralTGW
+
+  TGWRouteTable:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      Tags:
+        - Key: Name
+          Value: TGW-VPN-RouteTable
+
+  TGWAttachment:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref VpnVpc
+      SubnetIds:
+        - !Ref TgwAttachmentSubnet
+      Tags:
+        - Key: Name
+          Value: VPN-VPC-TGW-Attachment
+
+  TGWAssociation:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachment
+      TransitGatewayRouteTableId: !Ref TGWRouteTable
+
+  CustomerGateway:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      BgpAsn: 65000
+      IpAddress: !Ref ICECustomerGatewayIp
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: ICE-Customer-Gateway
+
+  VPNConnection:
+    Type: AWS::EC2::VPNConnection
+    Properties:
+      Type: ipsec.1
+      TransitGatewayId: !Ref TransitGateway
+      CustomerGatewayId: !Ref CustomerGateway
+      StaticRoutesOnly: true
+      VpnTunnelOptionsSpecifications:
+        - PreSharedKey: test123456
+          TunnelInsideCidr: 169.254.10.0/30
+        - PreSharedKey: test987654
+          TunnelInsideCidr: 169.254.11.0/30
+      Tags:
+        - Key: Name
+          Value: ICE-VPNConnection
+
+Outputs:
+  VpnVpcId:
+    Value: !Ref VpnVpc
+    Export:
+      Name: VpnVpcId
+
+  TgwId:
+    Value: !Ref TransitGateway
+    Export:
+      Name: TransitGatewayId
+
+  TgwRouteTableId:
+    Value: !Ref TGWRouteTable
+    Export:
+      Name: TransitGatewayRouteTableId
+
+  VpnVpcAttachmentId:
+    Value: !Ref TGWAttachment
+    Export:
+      Name: VpnVpcAttachmentId
+
+  VPNConnectionId:
+    Value: !Ref VPNConnection
+    Export:
+      Name: VPNConnectionId
