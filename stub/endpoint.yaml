@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: '2010-09-09'
 Description: ICE VPN Stub Simulation in Separate AWS Account
 
@@ -6,7 +5,7 @@ Parameters:
   ICEVpcCidr:
     Type: String
     Default: 10.99.0.0/16
-  PublicSubnetCidr:
+  PrivateSubnetCidr:
     Type: String
     Default: 10.99.1.0/24
   KeyName:
@@ -25,39 +24,23 @@ Resources:
         - Key: Name
           Value: ICE-VPC
 
-  PublicSubnet:
+  PrivateSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref ICEVpc
-      CidrBlock: !Ref PublicSubnetCidr
+      CidrBlock: !Ref PrivateSubnetCidr
       AvailabilityZone: !Select [0, !GetAZs '']
-      MapPublicIpOnLaunch: true
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-
-  AttachGateway:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref ICEVpc
-      InternetGatewayId: !Ref InternetGateway
+      MapPublicIpOnLaunch: false
 
   RouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref ICEVpc
 
-  Route:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref RouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
   RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PrivateSubnet
       RouteTableId: !Ref RouteTable
 
   # VGW simulates ICE's physical VPN appliance
@@ -79,24 +62,24 @@ Resources:
   WebSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP inbound
+      GroupDescription: Allow HTTP from VPN-connected network
       VpcId: !Ref ICEVpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
+          CidrIp: 10.0.0.0/8
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 0.0.0.0/0
+          CidrIp: 10.0.0.0/8
 
   NginxInstance:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t3.micro
       KeyName: !Ref KeyName
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PrivateSubnet
       SecurityGroupIds:
         - !Ref WebSG
       ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2
@@ -116,6 +99,7 @@ Outputs:
     Value: !Ref ICEVpc
   ICEVpnGatewayId:
     Value: !Ref ICEVpnGateway
-  NginxInstancePublicIp:
-    Value: !GetAtt NginxInstance.PublicIp
-    Description: Public IP of test NGINX endpoint
+  NginxInstancePrivateIp:
+    Value: !GetAtt NginxInstance.PrivateIp
+    Description: Private IP of test NGINX endpoint (VPN-only access)
+    
