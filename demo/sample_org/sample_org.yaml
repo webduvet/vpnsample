@@ -13,6 +13,14 @@ Parameters:
   AmiId:
     Type: AWS::SSM::Parameter::Value<String>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  ICENetworkCidr:
+    Type: String
+    Description: The CIDR block of the ICE network to route to.
+    Default: 10.99.1.0/24
+  SshFromCidr:
+    Type: String
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Default: 0.0.0.0/0
 
 Resources:
 
@@ -85,7 +93,7 @@ Resources:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId: !Ref RouteTable
-      DestinationCidrBlock: 10.99.1.0/24  # ICE Stub subnet range
+      DestinationCidrBlock: !Ref ICENetworkCidr  # ICE Stub subnet range
       TransitGatewayId: !ImportValue TransitGatewayId
 
   SecurityGroup:
@@ -97,7 +105,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 0.0.0.0/0
+          CidrIp: !Ref SshFromCidr
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0

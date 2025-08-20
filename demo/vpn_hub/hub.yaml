@@ -8,9 +8,22 @@ Parameters:
   TgwAttachmentSubnetCidr:
     Type: String
     Default: 10.100.0.0/24
+  NatGatewaySubnetCidr:
+    Type: String
+    Default: 10.100.1.0/24
+  ICENetworkCidr:
+    Type: String
+    Default: 10.99.1.0/24
+    Description: The CIDR block of the ICE network behind the VPN.
   ICECustomerGatewayIp:
     Type: String
     Description: The public IP address provided by ICE for VPN
+  VpnTunnel1PreSharedKeySecret:
+    Type: String
+    Description: The ARN of the AWS Secrets Manager secret for Tunnel 1's Pre-Shared Key
+  VpnTunnel2PreSharedKeySecret:
+    Type: String
+    Description: The ARN of the AWS Secrets Manager secret for Tunnel 2's Pre-Shared Key
 
 Resources:
 
@@ -33,18 +46,88 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
-          Value: VPN-VPC-Subnet
+          Value: VPN-VPC-TGW-Subnet
 
-  RouteTable:
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref NatGatewaySubnetCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-VPC-Public-Subnet
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TgwAttachmentRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  TgwAttachmentRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VpnVpc
+      Tags:
+        - Key: Name
+          Value: vpn-hub-private-rtb
 
   SubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref TgwAttachmentSubnet
-      RouteTableId: !Ref RouteTable
+      RouteTableId: !Ref TgwAttachmentRouteTable
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: VPN-VPC-IGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpnVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: VPN-VPC-NAT-GW
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpnVpc
+      Tags:
+        - Key: Name
+          Value: vpn-hub-public-rtb
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
 
   TransitGateway:
     Type: AWS::EC2::TransitGateway
@@ -64,6 +147,13 @@ Resources:
       Tags:
         - Key: Name
           Value: TGW-VPN-RouteTable
+
+  TGWVpnRoute:
+    Type: AWS::EC2::TransitGatewayRoute
+    Properties:
+      TransitGatewayRouteTableId: !Ref TGWRouteTable
+      DestinationCidrBlock: !Ref ICENetworkCidr
+      TransitGatewayAttachmentId: !Ref VPNConnection # Route to the VPN connection
 
   TGWAttachment:
     Type: AWS::EC2::TransitGatewayVpcAttachment
@@ -100,9 +190,9 @@ Resources:
       CustomerGatewayId: !Ref CustomerGateway
       StaticRoutesOnly: true
       VpnTunnelOptionsSpecifications:
-        - PreSharedKey: test123456
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel1PreSharedKeySecret, '}}']]
           TunnelInsideCidr: 169.254.10.0/30
-        - PreSharedKey: test987654
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel2PreSharedKeySecret, '}}']]
           TunnelInsideCidr: 169.254.11.0/30
       Tags:
         - Key: Name

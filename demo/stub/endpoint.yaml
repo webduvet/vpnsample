@@ -11,6 +11,10 @@ Parameters:
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
     Description: Name of an existing EC2 KeyPair
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: The SSM parameter for the latest Amazon Linux 2023 AMI.
 
 Resources:
 
@@ -82,12 +86,12 @@ Resources:
       SubnetId: !Ref PrivateSubnet
       SecurityGroupIds:
         - !Ref WebSG
-      ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2
+      ImageId: !Ref AmiId
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          yum update -y
-          amazon-linux-extras install nginx1 -y
+          dnf update -y
+          dnf install nginx -y
           systemctl enable nginx
           systemctl start nginx
       Tags:
@@ -102,4 +106,3 @@ Outputs:
   NginxInstancePrivateIp:
     Value: !GetAtt NginxInstance.PrivateIp
     Description: Private IP of test NGINX endpoint (VPN-only access)
-    
