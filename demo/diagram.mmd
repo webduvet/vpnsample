@@ -1,0 +1,33 @@
+
+graph TD
+    ICE[ICE VPN Endpoint<br>e.g., 204.86.64.15]
+
+    subgraph AWS
+        VPC1[VPC-B<br>Client Org 1]
+        VPC2[VPC-C<br>Client Org 2]
+        VPC3[VPC-D<br>Client Org N]
+        TGW[Transit Gateway]
+        VPC_Hub[VPC-A<br>VPN Hub]
+        NAT[NAT Gateway<br> SNAT client traffic]
+        VGW[Virtual Private Gateway<br> IPsec Tunnel Endpoint]
+
+        VPC1 -.->|Client traffic| TGW
+        VPC2 -.->|Client traffic| TGW
+        VPC3 -.->|Client traffic| TGW
+
+        TGW --> VPC_Hub
+        VPC_Hub --> NAT
+        NAT --> VGW
+    end
+
+    VGW ---|IPsec Tunnel| ICE
+
+    classDef ice fill:#ddeeff,stroke:#3366cc,stroke-width:2px;
+    class ICE ice;
+
+    classDef hub fill:#fff5cc,stroke:#ffcc00,stroke-width:2px;
+    class VPC_Hub,NAT,VGW hub;
+
+    classDef client fill:#ccffcc,stroke:#009933,stroke-width:2px;
+    class VPC1,VPC2,VPC3 client;
+
