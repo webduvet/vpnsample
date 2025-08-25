@@ -1,32 +1,56 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: VPN VPC with Transit Gateway (TGW) for centralized outbound access to ICE
+Description: >
+  HA VPN VPC with dual NATs and dual VPN connections to ICE (Mahwah & Chicago)
+  using a Transit Gateway for centralized static routing.
 
 Parameters:
   VpnVpcCidr:
     Type: String
     Default: 10.100.0.0/16
-  TgwAttachmentSubnetCidr:
+
+  # Subnets will be created in the first two AZs of the region
+  TgwAttachmentSubnetACidr:
     Type: String
     Default: 10.100.0.0/24
-  NatGatewaySubnetCidr:
+  PublicSubnetACidr:
     Type: String
     Default: 10.100.1.0/24
-  ICENetworkCidr:
+  TgwAttachmentSubnetBCidr:
     Type: String
-    Default: 10.99.1.0/24
-    Description: The CIDR block of the ICE network behind the VPN.
-  ICECustomerGatewayIp:
+    Default: 10.100.2.0/24
+  PublicSubnetBCidr:
     Type: String
-    Description: The public IP address provided by ICE for VPN
+    Default: 10.100.3.0/24
+
+  # --- VPN Parameters ---
+  ICENetworkCidrs:
+    Type: String
+    Description: >
+      A single CIDR prefix for the ICE network (e.g., 158.224.40.0/24).
+      You MUST manually add more routes post-deployment. See notes.
+
+  ICECustomerGatewayIpMahwah:
+    Type: String
+    Description: The public IP address provided by ICE for the Mahwah VPN endpoint.
   VpnTunnel1PreSharedKeySecret:
     Type: String
-    Description: The ARN of the AWS Secrets Manager secret for Tunnel 1's Pre-Shared Key
+    Description: ARN of the AWS Secrets Manager secret for Mahwah Tunnel 1's Pre-Shared Key.
   VpnTunnel2PreSharedKeySecret:
     Type: String
-    Description: The ARN of the AWS Secrets Manager secret for Tunnel 2's Pre-Shared Key
+    Description: ARN of the AWS Secrets Manager secret for Mahwah Tunnel 2's Pre-Shared Key.
+
+  ICECustomerGatewayIpChicago:
+    Type: String
+    Description: The public IP address provided by ICE for the Chicago VPN endpoint.
+  VpnTunnel3PreSharedKeySecret:
+    Type: String
+    Description: ARN of the AWS Secrets Manager secret for Chicago Tunnel 1's Pre-Shared Key.
+  VpnTunnel4PreSharedKeySecret:
+    Type: String
+    Description: ARN of the AWS Secrets Manager secret for Chicago Tunnel 2's Pre-Shared Key.
 
 Resources:
-
+  # SECTION: VPC and Core Networking (Multi-AZ)
   VpnVpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -35,57 +59,14 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: VPN-VPC
-
-  TgwAttachmentSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VpnVpc
-      CidrBlock: !Ref TgwAttachmentSubnetCidr
-      MapPublicIpOnLaunch: false
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: VPN-VPC-TGW-Subnet
-
-  PublicSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VpnVpc
-      CidrBlock: !Ref NatGatewaySubnetCidr
-      MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: VPN-VPC-Public-Subnet
-
-  DefaultPrivateRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref TgwAttachmentRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
-
-  TgwAttachmentRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VpnVpc
-      Tags:
-        - Key: Name
-          Value: vpn-hub-private-rtb
-
-  SubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref TgwAttachmentSubnet
-      RouteTableId: !Ref TgwAttachmentRouteTable
+          Value: VPN-Hub-VPC
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: VPN-VPC-IGW
+          Value: VPN-Hub-IGW
 
   VPCGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -93,28 +74,85 @@ Resources:
       VpcId: !Ref VpnVpc
       InternetGatewayId: !Ref InternetGateway
 
-  NatGatewayEIP:
+  # --- Subnets in AZ 'a'
+  TgwAttachmentSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref TgwAttachmentSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-TGW-Subnet-A
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Public-Subnet-A
+
+  # --- Subnets in AZ 'b'
+  TgwAttachmentSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref TgwAttachmentSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-TGW-Subnet-B
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref PublicSubnetBCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Public-Subnet-B
+
+  # SECTION: NAT Gateways for HA Internet Egress
+  NatGatewayEIPA:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
-
-  NatGateway:
+  NatGatewayA:
     Type: AWS::EC2::NatGateway
     Properties:
-      AllocationId: !GetAtt NatGatewayEIP.AllocationId
-      SubnetId: !Ref PublicSubnet
+      AllocationId: !GetAtt NatGatewayEIPA.AllocationId
+      SubnetId: !Ref PublicSubnetA
       Tags:
         - Key: Name
-          Value: VPN-VPC-NAT-GW
+          Value: VPN-Hub-NAT-GW-A
 
+  NatGatewayEIPB:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIPB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-NAT-GW-B
+
+  # SECTION: Route Tables
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VpnVpc
       Tags:
         - Key: Name
-          Value: vpn-hub-public-rtb
-
+          Value: VPN-Hub-Public-RTB
   DefaultPublicRoute:
     Type: AWS::EC2::Route
     DependsOn: VPCGatewayAttachment
@@ -122,13 +160,56 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
-
-  PublicSubnetRouteTableAssociation:
+  PublicSubnetARouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
+  TgwAttachmentRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpnVpc
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Private-RTB-A
+  DefaultPrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TgwAttachmentRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+  TgwSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TgwAttachmentSubnetA
+      RouteTableId: !Ref TgwAttachmentRouteTableA
+
+  TgwAttachmentRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpnVpc
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Private-RTB-B
+  DefaultPrivateRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TgwAttachmentRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+  TgwSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TgwAttachmentSubnetB
+      RouteTableId: !Ref TgwAttachmentRouteTableB
+
+  # SECTION: Transit Gateway
   TransitGateway:
     Type: AWS::EC2::TransitGateway
     Properties:
@@ -138,7 +219,7 @@ Resources:
       DefaultRouteTablePropagation: disable
       Tags:
         - Key: Name
-          Value: CentralTGW
+          Value: Central-TGW
 
   TGWRouteTable:
     Type: AWS::EC2::TransitGatewayRouteTable
@@ -146,14 +227,7 @@ Resources:
       TransitGatewayId: !Ref TransitGateway
       Tags:
         - Key: Name
-          Value: TGW-VPN-RouteTable
-
-  TGWVpnRoute:
-    Type: AWS::EC2::TransitGatewayRoute
-    Properties:
-      TransitGatewayRouteTableId: !Ref TGWRouteTable
-      DestinationCidrBlock: !Ref ICENetworkCidr
-      TransitGatewayAttachmentId: !Ref VPNConnection # Route to the VPN connection
+          Value: TGW-Spoke-to-VPN-RouteTable
 
   TGWAttachment:
     Type: AWS::EC2::TransitGatewayVpcAttachment
@@ -161,10 +235,11 @@ Resources:
       TransitGatewayId: !Ref TransitGateway
       VpcId: !Ref VpnVpc
       SubnetIds:
-        - !Ref TgwAttachmentSubnet
+        - !Ref TgwAttachmentSubnetA
+        - !Ref TgwAttachmentSubnetB
       Tags:
         - Key: Name
-          Value: VPN-VPC-TGW-Attachment
+          Value: VPN-Hub-VPC-TGW-Attachment
 
   TGWAssociation:
     Type: AWS::EC2::TransitGatewayRouteTableAssociation
@@ -172,22 +247,22 @@ Resources:
       TransitGatewayAttachmentId: !Ref TGWAttachment
       TransitGatewayRouteTableId: !Ref TGWRouteTable
 
-  CustomerGateway:
+  # SECTION: VPN Connections (Mahwah & Chicago)
+  CustomerGatewayMahwah:
     Type: AWS::EC2::CustomerGateway
     Properties:
-      BgpAsn: 65000
-      IpAddress: !Ref ICECustomerGatewayIp
+      IpAddress: !Ref ICECustomerGatewayIpMahwah
       Type: ipsec.1
       Tags:
         - Key: Name
-          Value: ICE-Customer-Gateway
+          Value: ICE-CGW-Mahwah
 
-  VPNConnection:
+  VPNConnectionMahwah:
     Type: AWS::EC2::VPNConnection
     Properties:
       Type: ipsec.1
       TransitGatewayId: !Ref TransitGateway
-      CustomerGatewayId: !Ref CustomerGateway
+      CustomerGatewayId: !Ref CustomerGatewayMahwah
       StaticRoutesOnly: true
       VpnTunnelOptionsSpecifications:
         - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel1PreSharedKeySecret, '}}']]
@@ -196,30 +271,70 @@ Resources:
           TunnelInsideCidr: 169.254.11.0/30
       Tags:
         - Key: Name
-          Value: ICE-VPNConnection
+          Value: ICE-VPN-Mahwah
+
+  CustomerGatewayChicago:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      IpAddress: !Ref ICECustomerGatewayIpChicago
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: ICE-CGW-Chicago
+
+  VPNConnectionChicago:
+    Type: AWS::EC2::VPNConnection
+    Properties:
+      Type: ipsec.1
+      TransitGatewayId: !Ref TransitGateway
+      CustomerGatewayId: !Ref CustomerGatewayChicago
+      StaticRoutesOnly: true
+      VpnTunnelOptionsSpecifications:
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel3PreSharedKeySecret, '}}']]
+          TunnelInsideCidr: 169.254.12.0/30
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel4PreSharedKeySecret, '}}']]
+          TunnelInsideCidr: 169.254.13.0/30
+      Tags:
+        - Key: Name
+          Value: ICE-VPN-Chicago
+
+  # SECTION: Static Routes to ICE Network
+  # NOTE: You MUST duplicate these two blocks for EACH prefix provided by ICE.
+  # This template only creates the route for the single CIDR in the 'ICENetworkCidrs' parameter.
+
+  # --- Step 1: Tell the VPN Connections where to send traffic
+  VpnRouteForMahwah:
+    Type: AWS::EC2::VPNConnectionRoute
+    Properties:
+      DestinationCidrBlock: !Ref ICENetworkCidrs
+      VpnConnectionId: !Ref VPNConnectionMahwah
+
+  VpnRouteForChicago:
+    Type: AWS::EC2::VPNConnectionRoute
+    Properties:
+      DestinationCidrBlock: !Ref ICENetworkCidrs
+      VpnConnectionId: !Ref VPNConnectionChicago
+
+  # --- Step 2: Tell the Transit Gateway how to reach the ICE network
+  TgwRouteToIce:
+    Type: AWS::EC2::TransitGatewayRoute
+    Properties:
+      TransitGatewayRouteTableId: !Ref TGWRouteTable
+      DestinationCidrBlock: !Ref ICENetworkCidrs
+      TransitGatewayAttachmentId: !Ref TGWAttachment # Route traffic to the VPN Hub VPC
 
 Outputs:
   VpnVpcId:
     Value: !Ref VpnVpc
-    Export:
-      Name: VpnVpcId
-
-  TgwId:
+  TransitGatewayId:
     Value: !Ref TransitGateway
-    Export:
-      Name: TransitGatewayId
-
   TgwRouteTableId:
     Value: !Ref TGWRouteTable
-    Export:
-      Name: TransitGatewayRouteTableId
-
-  VpnVpcAttachmentId:
-    Value: !Ref TGWAttachment
-    Export:
-      Name: VpnVpcAttachmentId
-
-  VPNConnectionId:
-    Value: !Ref VPNConnection
-    Export:
-      Name: VPNConnectionId
+  NatGatewayAEIP:
+    Value: !Ref NatGatewayEIPA
+  NatGatewayBEIP:
+    Value: !Ref NatGatewayEIPB
+  VPNConnectionMahwahId:
+    Value: !Ref VPNConnectionMahwah
+  VPNConnectionChicagoId:
+    Value: !Ref VPNConnectionChicago
