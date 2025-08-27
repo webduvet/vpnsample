@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: TGW origin-aware routing for ICE via Egress VPC + central SNAT
+
+Parameters:
+  TransitGatewayId:
+    Type: String
+  EgressVpcAttachmentId:
+    Type: String
+    Description: TGW attachment ID for the Egress (VPN Hub) VPC
+  VpnAttachmentIdPrimary:
+    Type: String
+    Description: TGW attachment ID for the primary ICE VPN (Mahwah)
+  IceCidr:
+    Type: String
+    Description: One ICE CIDR (e.g., 158.224.40.0/24). Duplicate the route resources for more.
+  SnatEgressIp:
+    Type: String
+    Description: The private /32 used as the SNAT egress IP (e.g., 10.100.10.10)
+
+Resources:
+  # A) Packets arriving from SPOKES
+  RTFromSpokes:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGatewayId
+      Tags: [{ Key: Name, Value: RT-FromSpokes }]
+
+  Route_Ice_FromSpokes_ToEgress:
+    Type: AWS::EC2::TransitGatewayRoute
+    Properties:
+      TransitGatewayRouteTableId: !Ref RTFromSpokes
+      DestinationCidrBlock: !Ref IceCidr
+      TransitGatewayAttachmentId: !Ref EgressVpcAttachmentId
+
+  # B) Packets arriving from EGRESS VPC
+  RTFromEgress:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGatewayId
+      Tags: [{ Key: Name, Value: RT-FromEgress }]
+
+  Assoc_Egress_To_RTFromEgress:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref EgressVpcAttachmentId
+      TransitGatewayRouteTableId: !Ref RTFromEgress
+
+  Route_Ice_FromEgress_ToVPN_Primary:
+    Type: AWS::EC2::TransitGatewayRoute
+    Properties:
+      TransitGatewayRouteTableId: !Ref RTFromEgress
+      DestinationCidrBlock: !Ref IceCidr
+      TransitGatewayAttachmentId: !Ref VpnAttachmentIdPrimary
+  # NOTE: You cannot add the same DestinationCidrBlock to a second attachment here.
+  # For Chicago failover, flip this route by automation on TunnelState alarm.
+
+  # C) Packets arriving from VPN (ICE replies)
+  RTFromVpn:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGatewayId
+      Tags: [{ Key: Name, Value: RT-FromVPN }]
+
+  # Associate both VPN attachments to RTFromVpn (do this via CLI after you fetch their IDs)
+  # Example CLI shown below.
+
+  Route_Snat_FromVpn_ToEgress:
+    Type: AWS::EC2::TransitGatewayRoute
+    Properties:
+      TransitGatewayRouteTableId: !Ref RTFromVpn
+      DestinationCidrBlock: !Ref SnatEgressIp      # this is a /32
+      TransitGatewayAttachmentId: !Ref EgressVpcAttachmentId
+
+Outputs:
+  RTFromSpokesId: { Value: !Ref RTFromSpokes }
+  RTFromEgressId: { Value: !Ref RTFromEgress }
+  RTFromVpnId:    { Value: !Ref RTFromVpn }

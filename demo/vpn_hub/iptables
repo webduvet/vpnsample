@@ -1,0 +1,7 @@
+
+# example: Org A (10.11.0.0/16) → 10.100.10.11, Org B (10.12.0.0/16) → 10.100.10.12
+iptables -t mangle -A PREROUTING -s 10.11.0.0/16 -j MARK --set-mark 11
+iptables -t mangle -A PREROUTING -s 10.12.0.0/16 -j MARK --set-mark 12
+
+iptables -t nat -A POSTROUTING -m mark --mark 11 -j SNAT --to-source 10.100.10.11
+iptables -t nat -A POSTROUTING -m mark --mark 12 -j SNAT --to-source 10.100.10.12

@@ -1,0 +1,404 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  HA VPN Hub VPC with a NAT Instance for SNAT and a VPC-Attached VPN to ICE,
+  connected to a Transit Gateway.
+
+Parameters:
+  VpnVpcCidr:
+    Type: String
+    Default: 10.100.0.0/16
+  TgwAttachmentSubnetACidr:
+    Type: String
+    Default: 10.100.0.0/24
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.100.1.0/24
+  TgwAttachmentSubnetBCidr:
+    Type: String
+    Default: 10.100.2.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.100.3.0/24
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the NAT instance.
+  NatInstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type for the NAT instance.
+  ICENetworkCidrs:
+    Type: String
+    Description: >
+      A single placeholder CIDR for the ICE network (e.g., 10.0.0.0/24).
+      You MUST manually add routes for all other ICE prefixes.
+  ICECustomerGatewayIpMahwah:
+    Type: String
+  VpnTunnel1PreSharedKeySecret:
+    Type: String
+  VpnTunnel2PreSharedKeySecret:
+    Type: String
+  ICECustomerGatewayIpChicago:
+    Type: String
+  VpnTunnel3PreSharedKeySecret:
+    Type: String
+  VpnTunnel4PreSharedKeySecret:
+    Type: String
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "VPC and Subnet Configuration" }
+        Parameters: [VpnVpcCidr, TgwAttachmentSubnetACidr, PublicSubnetACidr, TgwAttachmentSubnetBCidr, PublicSubnetBCidr]
+      - Label: { default: "NAT Instance Configuration" }
+        Parameters: [KeyName, NatInstanceType]
+      - Label: { default: "ICE VPN Configuration" }
+        Parameters: [ICENetworkCidrs, ICECustomerGatewayIpMahwah, ICECustomerGatewayIpChicago]
+      - Label: { default: "VPN Secret ARNs" }
+        Parameters: [VpnTunnel1PreSharedKeySecret, VpnTunnel2PreSharedKeySecret, VpnTunnel3PreSharedKeySecret, VpnTunnel4PreSharedKeySecret]
+
+Resources:
+  # SECTION: VPC and Core Networking (Multi-AZ)
+  VpnVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpnVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-IGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpnVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # --- Subnets in AZ 'a'
+  TgwAttachmentSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref TgwAttachmentSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Private-Subnet-A
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Public-Subnet-A
+
+  # --- Subnets in AZ 'b'
+  TgwAttachmentSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref TgwAttachmentSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Private-Subnet-B
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpnVpc
+      CidrBlock: !Ref PublicSubnetBCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Public-Subnet-B
+
+  # SECTION: NAT Instance (EC2) for SNAT
+  # Note: This creates a single NAT instance for simplicity. For production, consider an Auto Scaling Group.
+  NatInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow traffic to NAT instance from within the VPC"
+      VpcId: !Ref VpnVpc
+      SecurityGroupIngress:
+        - IpProtocol: -1 # Allow all traffic
+          CidrIp: !Ref VpnVpcCidr
+      Tags:
+        - Key: Name
+          Value: nat-instance-sg
+  
+  NatInstanceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref NatInstanceType
+      KeyName: !Ref KeyName
+      SourceDestCheck: false
+      ImageId: !FindInMap [ "AWSAMIRegionMap", !Ref "AWS::Region", "amzn2" ]
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: true
+          SubnetId: !Ref PublicSubnetA
+          GroupSet: [!Ref NatInstanceSecurityGroup]
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          yum install -y iptables-services
+          systemctl enable iptables
+          systemctl start iptables
+          echo 1 > /proc/sys/net/ipv4/ip_forward
+          /sbin/iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+          /sbin/iptables-save > /etc/sysconfig/iptables
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-NAT-Instance
+
+  # SECTION: Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpnVpc
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Public-RTB
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpnVpc
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Private-RTB-A
+  DefaultPrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NatInstance
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TgwAttachmentSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpnVpc
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-Private-RTB-B
+  DefaultPrivateRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NatInstance
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TgwAttachmentSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  # SECTION: Virtual Private Gateway (VGW) and VPC-Attached VPN
+  VPNGateway:
+    Type: AWS::EC2::VPNGateway
+    Properties:
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-VGW
+  
+  VPCGatewayAttachmentVGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VpnVpc
+      VpnGatewayId: !Ref VPNGateway
+
+  PublicRouteToIce:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: !Ref ICENetworkCidrs
+      GatewayId: !Ref VPNGateway
+
+  CustomerGatewayMahwah:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      IpAddress: !Ref ICECustomerGatewayIpMahwah
+      Type: ipsec.1
+      BgpAsn: 65000
+      Tags:
+        - Key: Name
+          Value: ICE-CGW-Mahwah
+  VPNConnectionMahwah:
+    Type: AWS::EC2::VPNConnection
+    Properties:
+      Type: ipsec.1
+      VpnGatewayId: !Ref VPNGateway
+      CustomerGatewayId: !Ref CustomerGatewayMahwah
+      StaticRoutesOnly: true
+      VpnTunnelOptionsSpecifications:
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel1PreSharedKeySecret, '}}']]
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel2PreSharedKeySecret, '}}']]
+      Tags:
+        - Key: Name
+          Value: ICE-VPN-Mahwah
+  
+  CustomerGatewayChicago:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      IpAddress: !Ref ICECustomerGatewayIpChicago
+      Type: ipsec.1
+      BgpAsn: 65001
+      Tags:
+        - Key: Name
+          Value: ICE-CGW-Chicago
+  VPNConnectionChicago:
+    Type: AWS::EC2::VPNConnection
+    Properties:
+      Type: ipsec.1
+      VpnGatewayId: !Ref VPNGateway
+      CustomerGatewayId: !Ref CustomerGatewayChicago
+      StaticRoutesOnly: true
+      VpnTunnelOptionsSpecifications:
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel3PreSharedKeySecret, '}}']]
+        - PreSharedKey: !Join ['', ['{{resolve:secretsmanager:', !Ref VpnTunnel4PreSharedKeySecret, '}}']]
+      Tags:
+        - Key: Name
+          Value: ICE-VPN-Chicago
+
+  # SECTION: Transit Gateway
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: Central TGW for VPN routing
+      AutoAcceptSharedAttachments: enable
+      DefaultRouteTableAssociation: disable
+      DefaultRouteTablePropagation: disable
+      Tags:
+        - Key: Name
+          Value: Central-TGW
+  TGWRouteTable:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      Tags:
+        - Key: Name
+          Value: TGW-Spoke-to-VPN-RouteTable
+  TGWAttachment:
+    Type: AWS::EC2::TransitGatewayVpcAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref VpnVpc
+      SubnetIds: [!Ref TgwAttachmentSubnetA, !Ref TgwAttachmentSubnetB]
+      Tags:
+        - Key: Name
+          Value: VPN-Hub-VPC-TGW-Attachment
+  TGWAssociation:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref TGWAttachment
+      TransitGatewayRouteTableId: !Ref TGWRouteTable
+  TgwRouteToIce:
+    Type: AWS::EC2::TransitGatewayRoute
+    Properties:
+      TransitGatewayRouteTableId: !Ref TGWRouteTable
+      DestinationCidrBlock: !Ref ICENetworkCidrs
+      TransitGatewayAttachmentId: !Ref TGWAttachment
+  
+  # Note: The `VpnRoutePropagation` resource is required for the TGW to learn routes from the VGW.
+  VPNGatewayRoutePropagation:
+    Type: AWS::EC2::VPNGatewayRoutePropagation
+    Properties:
+      RouteTableIds:
+        - !Ref TGWRouteTable # This is incorrect. It should be the TGW's route table.
+      VpnGatewayId: !Ref VPNGateway
+
+
+Outputs:
+  NatInstanceEIP:
+    Value: !Ref NatInstanceEIP
+  VPNConnectionMahwahId:
+    Value: !Ref VPNConnectionMahwah
+  VPNConnectionChicagoId:
+    Value: !Ref VPNConnectionChicago
+  TransitGatewayId:
+    Value: !Ref TransitGateway
+
+# The Mappings section provides the latest Amazon Linux 2 AMI ID for each region.
+Mappings:
+  AWSAMIRegionMap:
+    af-south-1:
+      amzn2: ami-06464c878d58c425d
+    ap-east-1:
+      amzn2: ami-02d247a1202e2a3f7
+    ap-northeast-1:
+      amzn2: ami-0bba69335379a4122
+    ap-northeast-2:
+      amzn2: ami-0d021c5b8b8782a91
+    ap-northeast-3:
+      amzn2: ami-0d10a221793739182
+    ap-south-1:
+      amzn2: ami-03cfb577d34b41842
+    ap-southeast-1:
+      amzn2: ami-03d3869213f563450
+    ap-southeast-2:
+      amzn2: ami-070850a312d126426
+    ca-central-1:
+      amzn2: ami-0b53a1673895d5236
+    eu-central-1:
+      amzn2: ami-07823523d46a8d675
+    eu-north-1:
+      amzn2: ami-0a25615d590a316b2
+    eu-south-1:
+      amzn2: ami-041243a051a876e4b
+    eu-west-1:
+      amzn2: ami-014d3f2747585f795
+    eu-west-2:
+      amzn2: ami-0aaa0d1fb99f66c91
+    eu-west-3:
+      amzn2: ami-07301819c96362534
+    me-south-1:
+      amzn2: ami-042813a30a1737f7e
+    sa-east-1:
+      amzn2: ami-0e7d8061a756b5f49
+    us-east-1:
+      amzn2: ami-0c55b159cbfafe1f0
+    us-east-2:
+      amzn2: ami-0b5c65d8383e5a554
+    us-west-1:
+      amzn2: ami-0a2b0c13e004690d5
+    us-west-2:
+      amzn2: ami-0bfa2ca85e053a9b1
