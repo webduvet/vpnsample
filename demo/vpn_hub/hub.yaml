@@ -253,6 +253,7 @@ Resources:
     Properties:
       IpAddress: !Ref ICECustomerGatewayIpMahwah
       Type: ipsec.1
+      BgpAsn: 65000
       Tags:
         - Key: Name
           Value: ICE-CGW-Mahwah
@@ -278,6 +279,7 @@ Resources:
     Properties:
       IpAddress: !Ref ICECustomerGatewayIpChicago
       Type: ipsec.1
+      BgpAsn: 65001
       Tags:
         - Key: Name
           Value: ICE-CGW-Chicago
@@ -303,17 +305,17 @@ Resources:
   # This template only creates the route for the single CIDR in the 'ICENetworkCidrs' parameter.
 
   # --- Step 1: Tell the VPN Connections where to send traffic
-  VpnRouteForMahwah:
-    Type: AWS::EC2::VPNConnectionRoute
-    Properties:
-      DestinationCidrBlock: !Ref ICENetworkCidrs
-      VpnConnectionId: !Ref VPNConnectionMahwah
-
-  VpnRouteForChicago:
-    Type: AWS::EC2::VPNConnectionRoute
-    Properties:
-      DestinationCidrBlock: !Ref ICENetworkCidrs
-      VpnConnectionId: !Ref VPNConnectionChicago
+  # VpnRouteForMahwah:
+  #   Type: AWS::EC2::VPNConnectionRoute
+  #   Properties:
+  #     DestinationCidrBlock: !Ref ICENetworkCidrs
+  #     VpnConnectionId: !Ref VPNConnectionMahwah
+  #
+  # VpnRouteForChicago:
+  #   Type: AWS::EC2::VPNConnectionRoute
+  #   Properties:
+  #     DestinationCidrBlock: !Ref ICENetworkCidrs
+  #     VpnConnectionId: !Ref VPNConnectionChicago
 
   # --- Step 2: Tell the Transit Gateway how to reach the ICE network
   TgwRouteToIce:
