@@ -1,0 +1,350 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ICE Simulator: strongSwan-based VPN peer with 1:1 NETMAP (public<->private) in its own VPC.
+  Use as a test "partner" for VGW/TGW VPN from your hub.
+
+Parameters:
+  # --- VPC / Subnets ---
+  IceSimVpcCidr:
+    Type: String
+    Default: 10.200.0.0/16
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.200.0.0/24
+  PrivateSubnetCidr:
+    Type: String
+    Default: 10.200.1.0/24
+
+  # --- "ICE public" prefix you'll route over the VPN (use TEST-NET-3 by default) ---
+  IcePublicPrefix:
+    Type: String
+    Default: 203.0.113.0/24
+    Description: ICE public service prefix to advertise over the VPN (routed, not Internet). Must be same mask length as BackendPrivatePrefix.
+
+  # --- Private backend prefix that receives DNAT (must be same mask length) ---
+  BackendPrivatePrefix:
+    Type: String
+    Default: 10.200.1.0/24
+    Description: Private subnet to which IcePublicPrefix will be 1:1 mapped via NETMAP.
+
+  # --- Optional simple backend port to demo (python http.server will listen here) ---
+  BackendDemoPort:
+    Type: Number
+    Default: 8080
+
+  # --- Your hub-side VGW tunnel outside IPs + PSKs (paste from downloaded AWS VPN config) ---
+  VgwTunnel1OutsideIp:
+    Type: String
+    Description: AWS VGW Tunnel 1 outside IP (from hub VPN config)
+  VgwTunnel2OutsideIp:
+    Type: String
+    Description: AWS VGW Tunnel 2 outside IP (from hub VPN config)
+  Tunnel1Psk:
+    Type: String
+    NoEcho: true
+    Description: Pre-shared key for Tunnel 1 (must match hub)
+  Tunnel2Psk:
+    Type: String
+    NoEcho: true
+    Description: Pre-shared key for Tunnel 2 (must match hub)
+
+  # --- IKE/ESP knobs (match your hub's settings; defaults fit ICE sheet) ---
+  IkeVersion:
+    Type: String
+    AllowedValues: [ikev1, ikev2]
+    Default: ikev1
+  Phase1DhGroup:
+    Type: Number
+    Default: 19
+  Phase1LifetimeSeconds:
+    Type: Number
+    Default: 14400
+  Phase2LifetimeSeconds:
+    Type: Number
+    Default: 3600
+  # ---------------- AMI & (optional) SSM role ----------------
+  AmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
+
+Mappings:
+  RegionMap:
+    # AL2023 x86_64 AMI via SSM Parameter (no hard-coded AMI IDs)
+    # Use dynamic reference for latest Amazon Linux 2023
+    dummy: { dummy: dummy }
+
+Resources:
+  # ---------------- VPC & Routing ----------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref IceSimVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: ICE-Sim-VPC }]
+
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: ICE-Sim-IGW }]
+
+  AttachIgw:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref Vpc
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: ICE-Sim-Public }]
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnetCidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: ICE-Sim-Private }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: ICE-Sim-Public-RTB }]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+  AssocPublicRT:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: ICE-Sim-Private-RTB }]
+
+  AssocPrivateRT:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ---------------- Security Groups ----------------
+  SgStrongSwan:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: strongSwan VPN appliance SG
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIp: 0.0.0.0/0
+        # Optional SSH (lock down in real use)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags: [{ Key: Name, Value: ICE-Sim-StrongSwan-SG }]
+
+  SgBackend:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Backend demo host SG
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref BackendDemoPort
+          ToPort: !Ref BackendDemoPort
+          SourceSecurityGroupId: !Ref SgStrongSwan
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags: [{ Key: Name, Value: ICE-Sim-Backend-SG }]
+
+  # ---------------- Elastic IP for the VPN peer ----------------
+  VpnEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: ICE-Sim-EIP }]
+
+  # ---------------- EC2: strongSwan (VPN & 1:1 NAT) ----------------
+  StrongSwanInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !Ref AmiId
+      InstanceType: t3.micro
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet
+          GroupSet: [!Ref SgStrongSwan]
+      Tags:
+        - { Key: Name, Value: ICE-Sim-strongSwan }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+
+          # Install strongSwan + iptables-services
+          dnf -y update || true
+          dnf -y install strongswan iptables-services
+
+          # Kernel & sysctl for forwarding / NAT friendliness
+          cat >/etc/sysctl.d/99-ice-sim.conf <<'EOF'
+          net.ipv4.ip_forward=1
+          net.ipv4.conf.all.rp_filter=0
+          net.ipv4.conf.default.rp_filter=0
+          EOF
+          sysctl --system
+
+          # Ensure NETMAP target is available (best-effort)
+          modprobe xt_NETMAP || true
+
+          # Discover our public IP (EIP) to use as leftid
+          PUBIP=$(curl -s http://ifconfig.me/ip)
+
+          # strongSwan config (two tunnels to AWS VGW)
+          cat >/etc/ipsec.conf <<EOF
+          config setup
+            uniqueids=never
+
+          conn aws-tunnel1
+            keyexchange=${IkeVersion}
+            authby=psk
+            left=%any
+            leftid=\$PUBIP
+            leftsubnet=0.0.0.0/0
+            right=${VgwTunnel1OutsideIp}
+            rightsubnet=0.0.0.0/0
+            ikelifetime=${Phase1LifetimeSeconds}s
+            lifetime=${Phase2LifetimeSeconds}s
+            ike=aes256-sha256-modp${Phase1DhGroup}!
+            esp=aes256-sha256-modp${Phase1DhGroup}!
+            dpdaction=restart
+            dpddelay=10s
+            closeaction=restart
+            auto=start
+            type=tunnel
+            mobike=no
+
+          conn aws-tunnel2
+            also=aws-tunnel1
+            right=${VgwTunnel2OutsideIp}
+            auto=start
+          EOF
+
+          cat >/etc/ipsec.secrets <<EOF
+          \$PUBIP ${VgwTunnel1OutsideIp} : PSK "${Tunnel1Psk}"
+          \$PUBIP ${VgwTunnel2OutsideIp} : PSK "${Tunnel2Psk}"
+          EOF
+          chmod 600 /etc/ipsec.secrets
+
+          systemctl enable --now strongswan
+
+          # 1:1 NAT for whole prefix using NETMAP (ICE public <-> backend private)
+          ICE_PFX="${IcePublicPrefix}"
+          BE_PFX="${BackendPrivatePrefix}"
+
+          # DNAT inbound to backend space
+          iptables -t nat -A PREROUTING -d "${IcePublicPrefix}" -j NETMAP --to "${BackendPrivatePrefix}"
+          # SNAT replies back to ICE public space
+          iptables -t nat -A POSTROUTING -s "${BackendPrivatePrefix}" -j NETMAP --to "${IcePublicPrefix}"
+
+          # Allow forward
+          iptables -A FORWARD -d "${BackendPrivatePrefix}" -j ACCEPT
+          iptables -A FORWARD -s "${BackendPrivatePrefix}" -j ACCEPT
+
+          # Persist rules
+          systemctl enable --now iptables
+          iptables-save >/etc/sysconfig/iptables
+
+          # Done
+          echo "ICE simulator ready. EIP=${!VpnEip}"
+    DependsOn:
+      - AssocPublicRT
+
+  # Associate EIP to the instance
+  EipAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt VpnEip.AllocationId
+      InstanceId: !Ref StrongSwanInstance
+
+  # ---------------- EC2: simple backend in private subnet ----------------
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: t3.micro
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: false
+          DeviceIndex: 0
+          SubnetId: !Ref PrivateSubnet
+          GroupSet: [!Ref SgBackend]
+      Tags:
+        - { Key: Name, Value: ICE-Sim-Backend }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf -y update || true
+          dnf -y install python3
+          cd /root
+          nohup python3 -m http.server ${BackendDemoPort} >/var/log/http-demo.log 2>&1 &
+
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags: [{ Key: Name, Value: ICE-Sim-InstanceRole }]
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+Outputs:
+  IceSimulatorEip:
+    Description: Use this as the Customer Gateway IP on your hub stack.
+    Value: !Ref VpnEip
+  IcePublicPrefixSimulated:
+    Description: Advertise this prefix over the VPN from your hub (VPN static routes).
+    Value: !Ref IcePublicPrefix
+  BackendPrivatePrefixUsed:
+    Value: !Ref BackendPrivatePrefix
+  StrongSwanInstanceId:
+    Value: !Ref StrongSwanInstance
+  BackendInstanceId:
+    Value: !Ref BackendInstance
