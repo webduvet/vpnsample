@@ -147,7 +147,7 @@ Resources:
   SgStrongSwan:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: strongSwan VPN appliance SG
+      GroupDescription: libreSwan VPN appliance SG
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: udp
@@ -190,7 +190,7 @@ Resources:
       Domain: vpc
       Tags: [{ Key: Name, Value: ICE-Sim-EIP }]
 
-  # ---------------- EC2: strongSwan (VPN & 1:1 NAT) ----------------
+  # ---------------- EC2: libreSwan (VPN & 1:1 NAT) ----------------
   StrongSwanInstance:
     Type: AWS::EC2::Instance
     Properties:
@@ -204,94 +204,104 @@ Resources:
           GroupSet: [!Ref SgStrongSwan]
       Tags:
         - { Key: Name, Value: ICE-Sim-strongSwan }
+
       UserData:
-        Fn::Base64: !Sub
-          - |
-            #!/bin/bash
-            set -euxo pipefail
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -euxo pipefail
 
-            # Install strongSwan + iptables-services
-            dnf -y update || true
-            dnf -y install strongswan iptables-services
+              # Install LibreSwan + iptables-services
+              dnf -y update || true
+              dnf -y install libreswan iptables-services
 
-            # Kernel & sysctl for forwarding / NAT friendliness
-            cat >/etc/sysctl.d/99-ice-sim.conf <<'EOF'
-            net.ipv4.ip_forward=1
-            net.ipv4.conf.all.rp_filter=0
-            net.ipv4.conf.default.rp_filter=0
-            EOF
-            sysctl --system
+              # Kernel & sysctl for forwarding / NAT friendliness
+              cat >/etc/sysctl.d/99-ice-sim.conf <<'EOF'
+              net.ipv4.ip_forward=1
+              net.ipv4.conf.all.rp_filter=0
+              net.ipv4.conf.default.rp_filter=0
+              EOF
 
-            # Ensure NETMAP target is available (best-effort)
-            modprobe xt_NETMAP || true
+              sysctl --system
 
-            # Discover our public IP (EIP) to use as leftid
-            PUBIP="${EipPublic}"
+              # Ensure NETMAP target is available (best-effort)
+              modprobe xt_NETMAP || true
 
-            # strongSwan config (two tunnels to AWS VGW)
-            cat >/etc/ipsec.conf <<EOF
-            config setup
-              uniqueids=never
+              # Discover our public IP (EIP) to use as leftid
+              PUBIP="${EipPublic}"
 
-            conn aws-tunnel1
-              keyexchange=${IkeVersion}
-              authby=psk
-              left=%any
-              leftid=\$PUBIP
-              leftsubnet=0.0.0.0/0
-              right=${VgwTunnel1OutsideIp}
-              rightsubnet=0.0.0.0/0
-              ikelifetime=${Phase1LifetimeSeconds}s
-              lifetime=${Phase2LifetimeSeconds}s
-              ike=aes256-sha256-modp${Phase1DhGroup}!
-              esp=aes256-sha256-modp${Phase1DhGroup}!
-              dpdaction=restart
-              dpddelay=10s
-              closeaction=restart
-              auto=start
-              type=tunnel
-              mobike=no
+              # Libreswan config (two tunnels to AWS VGW)
+              cat >/etc/ipsec.d/vgw1.conf <<EOF
 
-            conn aws-tunnel2
-              also=aws-tunnel1
-              right=${VgwTunnel2OutsideIp}
-              auto=start
-            EOF
+              config setup
+                uniqueids=never
 
-            cat >/etc/ipsec.secrets <<EOF
-            \$PUBIP ${VgwTunnel1OutsideIp} : PSK "${Tunnel1Psk}"
-            \$PUBIP ${VgwTunnel2OutsideIp} : PSK "${Tunnel2Psk}"
-            EOF
-            chmod 600 /etc/ipsec.secrets
+              conn vgw1
+                type=tunnel
+                authby=secret
+                keyingtries=%forever
+                ike=aes256-sha256-modp2048
+                esp=aes256-sha256-modp2048
+                left=%defaultroute
+                leftid=34.254.141.229
+                leftsubnet=0.0.0.0/0
+                right=203.0.113.201
+                rightsubnet=0.0.0.0/0
+                dpddelay=10
+                dpdtimeout=30
+                dpdaction=restart
+                auto=start
 
-            # Wait unit the EIP is Actuall attached before starting IKE
-            for i in {1..60}; do
-              ip -br addr | grep -q "$PUBIP" && break
-              sleep 2
-            done
+              conn vgw2
+                also=vgw1
+                right=${VgwTunnel2OutsideIp}
+                auto=start
+              EOF
 
-            systemctl enable --now strongswan
+              cat >/etc/ipsec.d/vgw1.secrets <<EOF
+              ${EipPublic} ${VgwTunnel1OutsideIp} : PSK "${Tunnel1Psk}"
+              ${EipPublic} ${VgwTunnel2OutsideIp} : PSK "${Tunnel2Psk}"
+              EOF
+              chmod 600 /etc/ipsec.d/vgw1.secrets
 
-            # 1:1 NAT for whole prefix using NETMAP (ICE public <-> backend private)
-            ICE_PFX="${IcePublicPrefix}"
-            BE_PFX="${BackendPrivatePrefix}"
+              # Wait until the EIP is Actually attached before starting IKE
+              for i in {1..60}; do
+                ip -br addr | grep -q "${EipPublic}" && break
+                sleep 2
+              done
 
-            # DNAT inbound to backend space
-            iptables -t nat -A PREROUTING -d "${IcePublicPrefix}" -j NETMAP --to "${BackendPrivatePrefix}"
-            # SNAT replies back to ICE public space
-            iptables -t nat -A POSTROUTING -s "${BackendPrivatePrefix}" -j NETMAP --to "${IcePublicPrefix}"
+              # Correct service name for Libreswan
+              systemctl enable --now ipsec
 
-            # Allow forward
-            iptables -A FORWARD -d "${BackendPrivatePrefix}" -j ACCEPT
-            iptables -A FORWARD -s "${BackendPrivatePrefix}" -j ACCEPT
+              # 1:1 NAT for whole prefix using NETMAP (ICE public <-> backend private)
+              ICE_PFX="${IcePublicPrefix}"
+              BE_PFX="${BackendPrivatePrefix}"
 
-            # Persist rules
-            systemctl enable --now iptables
-            iptables-save >/etc/sysconfig/iptables
+              # DNAT inbound to backend space
+              iptables -t nat -A PREROUTING -d "${IcePublicPrefix}" -j NETMAP --to "${BackendPrivatePrefix}"
+              # SNAT replies back to ICE public space
+              iptables -t nat -A POSTROUTING -s "${BackendPrivatePrefix}" -j NETMAP --to "${IcePublicPrefix}"
 
-            # Done
-            echo "ICE simulator ready. EIP=${!VpnEip}"
-          - { EipPublic: !GetAtt VpnEip.PublicIp }
+              # Allow forward
+              iptables -A FORWARD -d "${BackendPrivatePrefix}" -j ACCEPT
+              iptables -A FORWARD -s "${BackendPrivatePrefix}" -j ACCEPT
+
+              # Persist rules
+              systemctl enable --now iptables
+              iptables-save >/etc/sysconfig/iptables
+
+              # Done
+              echo "ICE simulator ready. EIP=${!VpnEip}"
+            -
+              EipPublic: !GetAtt VpnEip.PublicIp
+              VgwTunnel1OutsideIp: !Ref VgwTunnel1OutsideIp
+              VgwTunnel2OutsideIp: !Ref VgwTunnel2OutsideIp
+              Tunnel1Psk: !Ref Tunnel1Psk
+              Tunnel2Psk: !Ref Tunnel2Psk
+              IcePublicPrefix: !Ref IcePublicPrefix
+              BackendPrivatePrefix: !Ref BackendPrivatePrefix
+              VpnEip: !Ref VpnEip 
 
     DependsOn:
       - AssocPublicRT
