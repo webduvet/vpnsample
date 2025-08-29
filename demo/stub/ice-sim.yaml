@@ -235,14 +235,15 @@ Resources:
               cat >/etc/ipsec.d/vgw1.conf <<EOF
 
               config setup
-                uniqueids=never
+                uniqueids=no
 
               conn vgw1
+                keyeschange=${IkeVersion}
                 type=tunnel
                 authby=secret
                 keyingtries=%forever
-                ike=aes256-sha256-modp2048
-                esp=aes256-sha256-modp2048
+                ike=aes256-sha256-modp2048!
+                esp=aes256-sha256-modp2048!
                 left=%defaultroute
                 leftid=34.254.141.229
                 leftsubnet=0.0.0.0/0
@@ -302,6 +303,7 @@ Resources:
               IcePublicPrefix: !Ref IcePublicPrefix
               BackendPrivatePrefix: !Ref BackendPrivatePrefix
               VpnEip: !Ref VpnEip 
+              IkeVersion: !Ref IkeVersion
 
     DependsOn:
       - AssocPublicRT
