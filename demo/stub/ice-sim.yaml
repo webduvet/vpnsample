@@ -237,6 +237,20 @@ Resources:
               config setup
                 uniqueids=no
 
+              conn %default
+                ikelifetime=${Phase1LifetimeSeconds}s
+                keylife=${Phase2LifetimeSeconds}s
+                rekeymargin=3m
+                keyingtries=1
+                dpdaction=restart
+                dpddelay=30s
+                dpdtimeout=120s
+                authby=secret
+                ike=${IkeVersion}-aes256-sha256-modp${Phase1DhGroup}!
+                esp=aes256-sha256-modp${Phase1DhGroup}!
+                salifetime=${Phase2LifetimeSeconds}s
+                pfs=no
+
               conn vgw1
                 keyeschange=${IkeVersion}
                 type=tunnel
@@ -245,9 +259,9 @@ Resources:
                 ike=aes256-sha256-modp2048!
                 esp=aes256-sha256-modp2048!
                 left=%defaultroute
-                leftid=34.254.141.229
+                leftid=${EipPublic}
                 leftsubnet=0.0.0.0/0
-                right=203.0.113.201
+                right=${VgwTunnel1OutsideIp}
                 rightsubnet=0.0.0.0/0
                 dpddelay=10
                 dpdtimeout=30
@@ -261,9 +275,11 @@ Resources:
               EOF
 
               cat >/etc/ipsec.d/vgw1.secrets <<EOF
+
               ${EipPublic} ${VgwTunnel1OutsideIp} : PSK "${Tunnel1Psk}"
               ${EipPublic} ${VgwTunnel2OutsideIp} : PSK "${Tunnel2Psk}"
               EOF
+
               chmod 600 /etc/ipsec.d/vgw1.secrets
 
               # Wait until the EIP is Actually attached before starting IKE
