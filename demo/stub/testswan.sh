@@ -16,5 +16,5 @@ BE_ID=$(aws ec2 describe-instances --region $REGION \
 BE_IP=$(aws ec2 describe-instances --region $REGION --instance-ids $BE_ID \
   --query "Reservations[0].Instances[0].PrivateIpAddress" --output text)
 
-echo "StrongSwan: $SSW_ID"
+echo "LibreSwan: $SSW_ID"
 echo "Backend:    $BE_ID ($BE_IP)"

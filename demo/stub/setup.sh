@@ -1,4 +1,5 @@
 #!/bin/bash
+# Usage: source ./setup.sh to load environment variables for deploy.sh and update.sh
 
 # --- adjust these ---
 STACK=ice-sim

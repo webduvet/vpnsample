@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  ICE Simulator: strongSwan-based VPN peer with 1:1 NETMAP (public<->private) in its own VPC.
+  ICE Simulator: Libreswan-based VPN peer with 1:1 NETMAP (public<->private) in its own VPC.
   Use as a test "partner" for VGW/TGW VPN from your hub.
 
 Parameters:
@@ -144,29 +144,32 @@ Resources:
       RouteTableId: !Ref PrivateRouteTable
 
   # ---------------- Security Groups ----------------
-  SgStrongSwan:
+  SgLibreSwan:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: libreSwan VPN appliance SG
       VpcId: !Ref Vpc
       SecurityGroupIngress:
-        - IpProtocol: udp
+        - Description: IKE
+          IpProtocol: udp
           FromPort: 500
           ToPort: 500
           CidrIp: 0.0.0.0/0
-        - IpProtocol: udp
+        - Description: NAT-T
+          IpProtocol: udp
           FromPort: 4500
           ToPort: 4500
           CidrIp: 0.0.0.0/0
         # Optional SSH (lock down in real use)
-        - IpProtocol: tcp
+        - Description: SSH (foir lab only)
+          IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
-      Tags: [{ Key: Name, Value: ICE-Sim-StrongSwan-SG }]
+      Tags: [{ Key: Name, Value: ICE-Sim-LibreSwan-SG }]
 
   SgBackend:
     Type: AWS::EC2::SecurityGroup
@@ -174,10 +177,11 @@ Resources:
       GroupDescription: Backend demo host SG
       VpcId: !Ref Vpc
       SecurityGroupIngress:
-        - IpProtocol: tcp
+        - Description: Backend demo port from VPN host
+          IpProtocol: tcp
           FromPort: !Ref BackendDemoPort
           ToPort: !Ref BackendDemoPort
-          SourceSecurityGroupId: !Ref SgStrongSwan
+          SourceSecurityGroupId: !Ref SgLibreSwan
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -191,7 +195,7 @@ Resources:
       Tags: [{ Key: Name, Value: ICE-Sim-EIP }]
 
   # ---------------- EC2: libreSwan (VPN & 1:1 NAT) ----------------
-  StrongSwanInstance:
+  LibreSwanInstance:
     Type: AWS::EC2::Instance
     Properties:
       IamInstanceProfile: !Ref InstanceProfile
@@ -201,7 +205,7 @@ Resources:
         - AssociatePublicIpAddress: false
           DeviceIndex: 0
           SubnetId: !Ref PublicSubnet
-          GroupSet: [!Ref SgStrongSwan]
+          GroupSet: [!Ref SgLibreSwan]
       Tags:
         - { Key: Name, Value: ICE-Sim-strongSwan }
 
@@ -283,10 +287,11 @@ Resources:
               chmod 600 /etc/ipsec.d/vgw1.secrets
 
               # Wait until the EIP is Actually attached before starting IKE
-              for i in {1..60}; do
-                ip -br addr | grep -q "${EipPublic}" && break
-                sleep 2
-              done
+              # TODO - remove or look into it...
+              # for i in {1..60}; do
+              #   ip -br addr | grep -q "${EipPublic}" && break
+              #   sleep 2
+              # done
 
               # Correct service name for Libreswan
               systemctl enable --now ipsec
@@ -309,7 +314,7 @@ Resources:
               iptables-save >/etc/sysconfig/iptables
 
               # Done
-              echo "ICE simulator ready. EIP=${!VpnEip}"
+              echo "ICE simulator ready. EIP=${EipPublic}"
             -
               EipPublic: !GetAtt VpnEip.PublicIp
               VgwTunnel1OutsideIp: !Ref VgwTunnel1OutsideIp
@@ -329,7 +334,7 @@ Resources:
     Type: AWS::EC2::EIPAssociation
     Properties:
       AllocationId: !GetAtt VpnEip.AllocationId
-      InstanceId: !Ref StrongSwanInstance
+      InstanceId: !Ref LibreSwanInstance
 
   # ---------------- EC2: simple backend in private subnet ----------------
   BackendInstance:
@@ -375,13 +380,13 @@ Resources:
 Outputs:
   IceSimulatorEip:
     Description: Use this as the Customer Gateway IP on your hub stack.
-    Value: !Ref VpnEip
+    Value: !GetAtt VpnEip.PublicIp
   IcePublicPrefixSimulated:
     Description: Advertise this prefix over the VPN from your hub (VPN static routes).
     Value: !Ref IcePublicPrefix
   BackendPrivatePrefixUsed:
     Value: !Ref BackendPrivatePrefix
-  StrongSwanInstanceId:
-    Value: !Ref StrongSwanInstance
+  LibreSwanInstanceId:
+    Value: !Ref LibreSwanInstance
   BackendInstanceId:
     Value: !Ref BackendInstance
