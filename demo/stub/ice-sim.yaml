@@ -52,7 +52,7 @@ Parameters:
   IkeVersion:
     Type: String
     AllowedValues: [ikev1, ikev2]
-    Default: ikev1
+    Default: ikev2
   Phase1DhGroup:
     Type: Number
     Default: 19
@@ -207,7 +207,7 @@ Resources:
           SubnetId: !Ref PublicSubnet
           GroupSet: [!Ref SgLibreSwan]
       Tags:
-        - { Key: Name, Value: ICE-Sim-strongSwan }
+        - { Key: Name, Value: ICE-Sim-LibreSwan }
 
       UserData:
         Fn::Base64:
@@ -236,40 +236,44 @@ Resources:
               PUBIP="${EipPublic}"
 
               # Libreswan config (two tunnels to AWS VGW)
-              cat >/etc/ipsec.d/vgw1.conf <<EOF
+              cat >/etc/ipsec.d/vgw.conf <<EOF
 
               config setup
                 uniqueids=no
 
               conn %default
+                # Phase 1 Algorithms: AES256-SHA256 with DH Group 19
+                ike=aes256-sha256-dh19
+
+                # Phase 2 Algorithms: AES256-SHA256 with DH Group 19
+                esp=aes256-sha256-dh19
+
+                # Enable Perfect Forward Secrecy (required for Phase 2 DH Group)
+                pfs=yes
+
+                # Lifelines
                 ikelifetime=${Phase1LifetimeSeconds}s
-                keylife=${Phase2LifetimeSeconds}s
-                rekeymargin=3m
-                keyingtries=1
-                dpdaction=restart
+                salifetime=${Phase2LifetimeSeconds}s
+
+                # DPD settings
                 dpddelay=30s
                 dpdtimeout=120s
+                retransmit-timeout=60s
+
+                # General settings
+                rekeymargin=9m
                 authby=secret
-                ike=${IkeVersion}-aes256-sha256-modp${Phase1DhGroup}!
-                esp=aes256-sha256-modp${Phase1DhGroup}!
-                salifetime=${Phase2LifetimeSeconds}s
-                pfs=no
 
               conn vgw1
-                keyeschange=${IkeVersion}
+                # default to ikev2 no need to specify
+                # keyexchange=${IkeVersion}
+
                 type=tunnel
-                authby=secret
-                keyingtries=%forever
-                ike=aes256-sha256-modp2048!
-                esp=aes256-sha256-modp2048!
                 left=%defaultroute
                 leftid=${EipPublic}
                 leftsubnet=0.0.0.0/0
                 right=${VgwTunnel1OutsideIp}
                 rightsubnet=0.0.0.0/0
-                dpddelay=10
-                dpdtimeout=30
-                dpdaction=restart
                 auto=start
 
               conn vgw2
@@ -278,13 +282,13 @@ Resources:
                 auto=start
               EOF
 
-              cat >/etc/ipsec.d/vgw1.secrets <<EOF
+              cat >/etc/ipsec.d/vgw.secrets <<EOF
 
               ${EipPublic} ${VgwTunnel1OutsideIp} : PSK "${Tunnel1Psk}"
               ${EipPublic} ${VgwTunnel2OutsideIp} : PSK "${Tunnel2Psk}"
               EOF
 
-              chmod 600 /etc/ipsec.d/vgw1.secrets
+              chmod 600 /etc/ipsec.d/vgw.secrets
 
               # Wait until the EIP is Actually attached before starting IKE
               # TODO - remove or look into it...
@@ -308,6 +312,10 @@ Resources:
               # Allow forward
               iptables -A FORWARD -d "${BackendPrivatePrefix}" -j ACCEPT
               iptables -A FORWARD -s "${BackendPrivatePrefix}" -j ACCEPT
+
+              # Allow inbound IKE and NAT-T to the instance itself
+              iptables -I INPUT -p udp --dport 500 -j ACCEPT
+              iptables -I INPUT -p udp --dport 4500 -j ACCEPT
 
               # Persist rules
               systemctl enable --now iptables

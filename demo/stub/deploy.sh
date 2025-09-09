@@ -30,4 +30,5 @@ aws cloudformation deploy \
     Tunnel2Psk="$PSK2" \
     IcePublicPrefix="$ICE_PUBLIC_PREFIX" \
     BackendPrivatePrefix="$BACKEND_PRIVATE_PREFIX" \
-    BackendDemoPort="$BACKEND_PORT"
+    BackendDemoPort="$BACKEND_PORT" \
+    IkeVersion="ikev2"
