@@ -309,13 +309,13 @@ Resources:
               # SNAT replies back to ICE public space
               iptables -t nat -A POSTROUTING -s "${BackendPrivatePrefix}" -j NETMAP --to "${IcePublicPrefix}"
 
-              # Allow forward
-              iptables -A FORWARD -d "${BackendPrivatePrefix}" -j ACCEPT
-              iptables -A FORWARD -s "${BackendPrivatePrefix}" -j ACCEPT
-
               # Allow inbound IKE and NAT-T to the instance itself
               iptables -I INPUT -p udp --dport 500 -j ACCEPT
               iptables -I INPUT -p udp --dport 4500 -j ACCEPT
+
+              # Allow forward
+              iptables -A FORWARD -d "${BackendPrivatePrefix}" -j ACCEPT
+              iptables -A FORWARD -s "${BackendPrivatePrefix}" -j ACCEPT
 
               # Persist rules
               systemctl enable --now iptables
