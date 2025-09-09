@@ -1,5 +1,23 @@
 #!/bin/bash
 
+echo "Starting deployment script..."
+set -e
+# print all arguments passed to the script as environment variables
+echo "Arguments passed to the script:"
+echo "STACK: $STACK"
+echo "REGION: $REGION"
+echo "TUN1_OUTSIDE_IP: $TUN1_OUTSIDE_IP"
+echo "TUN2_OUTSIDE_IP: $TUN2_OUTSIDE_IP"
+echo "PSK1: $PSK1"
+echo "PSK2: $PSK2"
+echo "ICE_PUBLIC_PREFIX: $ICE_PUBLIC_PREFIX"
+echo "BACKEND_PRIVATE_PREFIX: $BACKEND_PRIVATE_PREFIX"
+echo "BACKEND_PORT: $BACKEND_PORT"
+echo "Arguments printed."
+echo "Deploying CloudFormation stack..."
+
+
+
 aws cloudformation deploy \
   --stack-name "$STACK" \
   --template-file ./ice-sim.yaml \
