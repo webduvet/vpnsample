@@ -271,9 +271,9 @@ Resources:
                 type=tunnel
                 left=%defaultroute
                 leftid=${EipPublic}
-                leftsubnet=0.0.0.0/0
+                leftsubnet=10.100.2.0/27
                 right=${VgwTunnel1OutsideIp}
-                rightsubnet=0.0.0.0/0
+                rightsubnet=203.0.213.0/24
                 auto=start
 
               conn vgw2
