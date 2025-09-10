@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  ICE Simulator: Libreswan-based VPN peer with 1:1 NETMAP (public<->private) in its own VPC.
-  Use as a test "partner" for VGW/TGW VPN from your hub.
+  ICE Simulator (VTI): Libreswan-based VPN peer with 1:1 NETMAP (public<->private) in its own VPC.
+  Route-based IPsec (vti0). Use as a test "partner" for VGW/TGW VPN from your hub.
 
 Parameters:
   # --- VPC / Subnets ---
@@ -14,6 +14,12 @@ Parameters:
   PrivateSubnetCidr:
     Type: String
     Default: 10.200.1.0/24
+
+  # --- Hub VPC (VGW-attached) CIDR to route into the tunnel ---
+  HubVpcCidr:
+    Type: String
+    Default: 10.100.0.0/16
+    Description: The VPC CIDR behind your VGW/TGW on the hub side. Routed via vti0.
 
   # --- "ICE public" prefix you'll route over the VPN (use TEST-NET-3 by default) ---
   IcePublicPrefix:
@@ -62,6 +68,7 @@ Parameters:
   Phase2LifetimeSeconds:
     Type: Number
     Default: 3600
+
   # ---------------- AMI & (optional) SSM role ----------------
   AmiId:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
@@ -69,8 +76,6 @@ Parameters:
 
 Mappings:
   RegionMap:
-    # AL2023 x86_64 AMI via SSM Parameter (no hard-coded AMI IDs)
-    # Use dynamic reference for latest Amazon Linux 2023
     dummy: { dummy: dummy }
 
 Resources:
@@ -147,7 +152,7 @@ Resources:
   SgLibreSwan:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: libreSwan VPN appliance SG
+      GroupDescription: LibreSwan VPN appliance SG
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - Description: IKE
@@ -160,8 +165,7 @@ Resources:
           FromPort: 4500
           ToPort: 4500
           CidrIp: 0.0.0.0/0
-        # Optional SSH (lock down in real use)
-        - Description: SSH (foir lab only)
+        - Description: SSH (lab only; lock down in real use)
           IpProtocol: tcp
           FromPort: 22
           ToPort: 22
@@ -177,16 +181,16 @@ Resources:
       GroupDescription: Backend demo host SG
       VpcId: !Ref Vpc
       SecurityGroupIngress:
-        - Description: Backend demo port from VPN host
+        - Description: Backend demo port from VPN host (SG-to-SG)
           IpProtocol: tcp
           FromPort: !Ref BackendDemoPort
           ToPort: !Ref BackendDemoPort
           SourceSecurityGroupId: !Ref SgLibreSwan
-        - Description: Allow hub sources to demo port (needed after NAT)
+        - Description: Allow hub sources to demo port (forwarded traffic)
           IpProtocol: tcp
           FromPort: !Ref BackendDemoPort
           ToPort: !Ref BackendDemoPort
-          CidrIp: 10.100.2.0/27   # hub’s source prefix
+          CidrIp: !Ref HubVpcCidr
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -199,7 +203,7 @@ Resources:
       Domain: vpc
       Tags: [{ Key: Name, Value: ICE-Sim-EIP }]
 
-  # ---------------- EC2: libreSwan (VPN & 1:1 NAT) ----------------
+  # ---------------- EC2: LibreSwan (VPN & 1:1 NAT via vti0) ----------------
   LibreSwanInstance:
     Type: AWS::EC2::Instance
     Properties:
@@ -214,7 +218,6 @@ Resources:
       SourceDestCheck: false
       Tags:
         - { Key: Name, Value: ICE-Sim-LibreSwan }
-
       UserData:
         Fn::Base64:
           Fn::Sub:
@@ -222,66 +225,53 @@ Resources:
               #!/bin/bash
               set -euxo pipefail
 
-              # Install LibreSwan + iptables-services
               dnf -y update || true
-              dnf -y install libreswan iptables-services
+              dnf -y install libreswan iptables-services conntrack-tools
 
-              # Kernel & sysctl for forwarding / NAT friendliness
+              # Kernel & sysctl
               cat >/etc/sysctl.d/99-ice-sim.conf <<'EOF'
               net.ipv4.ip_forward=1
               net.ipv4.conf.all.rp_filter=0
               net.ipv4.conf.default.rp_filter=0
               EOF
-
               sysctl --system
 
-              # Ensure NETMAP target is available (best-effort)
-              modprobe xt_NETMAP || true
+              modprobe ip_vti || true
+              modprobe xfrm_user || true
 
-              # Discover our public IP (EIP) to use as leftid
-              PUBIP="${EipPublic}"
-
-              # Libreswan config (two tunnels to AWS VGW)
+              # Libreswan VTI config (route-based)
               cat >/etc/ipsec.d/vgw.conf <<EOF
-
               config setup
                 uniqueids=no
 
               conn %default
-                # Phase 1 Algorithms: AES256-SHA256 with DH Group 19
-                ike=aes256-sha256-dh19
-
-                # Phase 2 Algorithms: AES256-SHA256 with DH Group 19
-                esp=aes256-sha256-dh19
-
-                # Enable Perfect Forward Secrecy (required for Phase 2 DH Group)
+                keyexchange=${IkeVersion}
+                ike=aes256-sha256-dh${Phase1DhGroup}
+                esp=aes256-sha256-dh${Phase1DhGroup}
                 pfs=yes
-
-                # Lifelines
                 ikelifetime=${Phase1LifetimeSeconds}s
                 salifetime=${Phase2LifetimeSeconds}s
-
-                # DPD settings
                 dpddelay=30s
                 dpdtimeout=120s
-                retransmit-timeout=60s
-
-                # General settings
-                rekeymargin=9m
                 authby=secret
 
-              conn vgw1
-                # default to ikev2 no need to specify
-                # keyexchange=${IkeVersion}
+                # VTI
+                mark=42/0xffffffff
+                vti-interface=vti0
+                vti-shared=yes
+                vti-routing=no    # we add explicit routes below
 
-                type=tunnel
+                # Wide selectors keep VGW happy; we control real traffic via routes
                 left=%defaultroute
                 leftid=${EipPublic}
-                right=${VgwTunnel1OutsideIp}
+                leftsubnet=0.0.0.0/0
+                rightsubnet=0.0.0.0/0
+                type=tunnel
 
-                leftsubnet=${IcePublicPrefix}
-                rightsubnet=10.100.2.0/27
-                # auto=start
+              conn vgw1
+                also=%default
+                right=${VgwTunnel1OutsideIp}
+                auto=start
 
               conn vgw2
                 also=vgw1
@@ -290,46 +280,49 @@ Resources:
               EOF
 
               cat >/etc/ipsec.d/vgw.secrets <<EOF
-
               ${EipPublic} ${VgwTunnel1OutsideIp} : PSK "${Tunnel1Psk}"
               ${EipPublic} ${VgwTunnel2OutsideIp} : PSK "${Tunnel2Psk}"
               EOF
-
               chmod 600 /etc/ipsec.d/vgw.secrets
 
-              # Wait until the EIP is Actually attached before starting IKE
-              # TODO - remove or look into it...
-              # for i in {1..60}; do
-              #   ip -br addr | grep -q "${EipPublic}" && break
-              #   sleep 2
-              # done
-
-              # Correct service name for Libreswan
               systemctl enable --now ipsec
 
-              # 1:1 NAT for whole prefix using NETMAP (ICE public <-> backend private)
-              ICE_PFX="${IcePublicPrefix}"
-              BE_PFX="${BackendPrivatePrefix}"
+              # Bring up vti0 explicitly (pluto usually does this)
+              ip link set vti0 up || true
 
-              # DNAT inbound to backend space
-              iptables -t nat -A PREROUTING -d "${IcePublicPrefix}" -j NETMAP --to "${BackendPrivatePrefix}"
-              # SNAT replies back to ICE public space
-              iptables -t nat -A POSTROUTING -s "${BackendPrivatePrefix}" -j NETMAP --to "${IcePublicPrefix}"
+              # Route hub VPC via the tunnel (so backend replies enter vti0)
+              ip route replace ${HubVpcCidr} dev vti0
 
-              # Allow inbound IKE and NAT-T to the instance itself
-              iptables -I INPUT -p udp --dport 500 -j ACCEPT
-              iptables -I INPUT -p udp --dport 4500 -j ACCEPT
+              dnf -y install libreswan nftables
 
-              # Allow forward
-              iptables -A FORWARD -d "${BackendPrivatePrefix}" -j ACCEPT
-              iptables -A FORWARD -s "${BackendPrivatePrefix}" -j ACCEPT
+              # ... after ipsec is up and vti0 exists ...
 
-              # Persist rules
-              systemctl enable --now iptables
-              iptables-save >/etc/sysconfig/iptables
+              # NAT via nftables (single demo host example)
+              ICE_IP=203.0.113.246
+              BE_IP=10.200.1.246
 
-              # Done
-              echo "ICE simulator ready. EIP=${EipPublic}"
+              nft add table ip nat 2>/dev/null || true
+              nft 'add chain ip nat prerouting { type nat hook prerouting priority -100; }' 2>/dev/null || true
+              nft 'add chain ip nat postrouting { type nat hook postrouting priority 100; }' 2>/dev/null || true
+
+              nft 'flush chain ip nat prerouting'
+              nft 'flush chain ip nat postrouting'
+              nft "add rule ip nat prerouting  iif vti0 ip daddr $ICE_IP tcp dport ${BackendDemoPort} dnat to $BE_IP"
+              nft "add rule ip nat postrouting oif vti0 ip saddr $BE_IP tcp sport ${BackendDemoPort} snat to $ICE_IP"
+
+              # Forwarding (nft filter)
+              nft add table ip filter 2>/dev/null || true
+              nft 'add chain ip filter FORWARD { type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
+              DEV=$(ip -o -4 route show to default | awk '{print $5}')
+              nft "add rule ip filter FORWARD iifname vti0 oifname $DEV accept"
+              nft "add rule ip filter FORWARD iifname $DEV  oifname vti0 accept"
+              nft "add rule ip filter FORWARD ct state related,established accept"
+
+              # Persist nft rules
+              nft list ruleset > /etc/sysconfig/nftables.conf
+              systemctl enable --now nftables
+
+              echo "ICE simulator (VTI) ready. EIP=${EipPublic}"
             -
               EipPublic: !GetAtt VpnEip.PublicIp
               VgwTunnel1OutsideIp: !Ref VgwTunnel1OutsideIp
@@ -338,8 +331,11 @@ Resources:
               Tunnel2Psk: !Ref Tunnel2Psk
               IcePublicPrefix: !Ref IcePublicPrefix
               BackendPrivatePrefix: !Ref BackendPrivatePrefix
-              VpnEip: !Ref VpnEip 
               IkeVersion: !Ref IkeVersion
+              Phase1DhGroup: !Ref Phase1DhGroup
+              Phase1LifetimeSeconds: !Ref Phase1LifetimeSeconds
+              Phase2LifetimeSeconds: !Ref Phase2LifetimeSeconds
+              HubVpcCidr: !Ref HubVpcCidr
 
     DependsOn:
       - AssocPublicRT
@@ -370,9 +366,14 @@ Resources:
           set -euxo pipefail
           dnf -y update || true
           dnf -y install python3
+          # (Optional) relax rp_filter in case of asymmetric return
+          cat >/etc/sysctl.d/99-ice-backend.conf <<'EOF'
+          net.ipv4.conf.all.rp_filter=0
+          net.ipv4.conf.default.rp_filter=0
+          EOF
+          sysctl --system
           cd /root
           nohup python3 -m http.server ${BackendDemoPort} >/var/log/http-demo.log 2>&1 &
-
 
   InstanceRole:
     Type: AWS::IAM::Role
@@ -392,14 +393,14 @@ Resources:
     Properties:
       Roles: [!Ref InstanceRole]
 
-
+  # Private subnet must send hub-sourced traffic back via the router instance
   RouteHubPrefixViaLibreSwan:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: 10.100.2.0/27   # hub’s source prefix
+      DestinationCidrBlock: 10.100.2.0/27   # hub’s source prefix used in tests
       InstanceId: !Ref LibreSwanInstance
-      # NetworkInterfaceId: !GetAtt LibreSwanInstance.PrimaryNetworkInterfaceId
+  # (Keep this. It ensures backend replies reach LibreSwan to enter vti0.)
 
 Outputs:
   IceSimulatorEip:
