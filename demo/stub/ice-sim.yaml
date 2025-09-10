@@ -182,6 +182,11 @@ Resources:
           FromPort: !Ref BackendDemoPort
           ToPort: !Ref BackendDemoPort
           SourceSecurityGroupId: !Ref SgLibreSwan
+        - Description: Allow hub sources to demo port (needed after NAT)
+          IpProtocol: tcp
+          FromPort: !Ref BackendDemoPort
+          ToPort: !Ref BackendDemoPort
+          CidrIp: 10.100.2.0/27   # hub’s source prefix
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -206,6 +211,7 @@ Resources:
           DeviceIndex: 0
           SubnetId: !Ref PublicSubnet
           GroupSet: [!Ref SgLibreSwan]
+      SourceDestCheck: false
       Tags:
         - { Key: Name, Value: ICE-Sim-LibreSwan }
 
@@ -271,10 +277,11 @@ Resources:
                 type=tunnel
                 left=%defaultroute
                 leftid=${EipPublic}
-                leftsubnet=10.100.2.0/27
                 right=${VgwTunnel1OutsideIp}
-                rightsubnet=203.0.213.0/24
-                auto=start
+
+                leftsubnet=${IcePublicPrefix}
+                rightsubnet=10.100.2.0/27
+                # auto=start
 
               conn vgw2
                 also=vgw1
@@ -384,6 +391,15 @@ Resources:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles: [!Ref InstanceRole]
+
+
+  RouteHubPrefixViaLibreSwan:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 10.100.2.0/27   # hub’s source prefix
+      InstanceId: !Ref LibreSwanInstance
+      # NetworkInterfaceId: !GetAtt LibreSwanInstance.PrimaryNetworkInterfaceId
 
 Outputs:
   IceSimulatorEip:
