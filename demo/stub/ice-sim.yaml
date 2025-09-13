@@ -226,7 +226,8 @@ Resources:
               set -euxo pipefail
 
               dnf -y update || true
-              dnf -y install libreswan iptables-services conntrack-tools
+              # dnf -y install libreswan conntrack-tools
+              dnf -y install libreswan nftables
 
               # Kernel & sysctl
               cat >/etc/sysctl.d/99-ice-sim.conf <<'EOF'
@@ -298,13 +299,13 @@ Resources:
               # Route hub VPC via the tunnel (so backend replies enter vti0)
               ip route replace ${HubVpcCidr} dev vti0
 
-              dnf -y install libreswan nftables
 
               # ... after ipsec is up and vti0 exists ...
 
               # NAT via nftables (single demo host example)
               ICE_IP=203.0.113.246
               BE_IP=10.200.1.246
+              PRIMARY_DEV=$(ip -o -4 route show to default | awk '{print $5}')
 
               nft add table ip nat 2>/dev/null || true
               nft 'add chain ip nat prerouting { type nat hook prerouting priority -100; }' 2>/dev/null || true
@@ -312,19 +313,20 @@ Resources:
 
               nft 'flush chain ip nat prerouting'
               nft 'flush chain ip nat postrouting'
-              nft "add rule ip nat prerouting  iif vti0 ip daddr $ICE_IP tcp dport ${BackendDemoPort} dnat to $BE_IP"
-              nft "add rule ip nat postrouting oif vti0 ip saddr $BE_IP tcp sport ${BackendDemoPort} snat to $ICE_IP"
+
+              nft "add rule ip nat prerouting iif vti0 ip daddr $ICE_IP tcp dport ${BackendDemoPort} dnat to $BE_IP"
+              nft "add rule ip nat postrouting oif $PRIMARY_DEV masquerade"
 
               # Forwarding (nft filter)
               nft add table ip filter 2>/dev/null || true
               nft 'add chain ip filter FORWARD { type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
-              DEV=$(ip -o -4 route show to default | awk '{print $5}')
-              nft "add rule ip filter FORWARD iifname vti0 oifname $DEV accept"
-              nft "add rule ip filter FORWARD iifname $DEV  oifname vti0 accept"
+              nft 'flush chain ip filter FORWARD'
+              nft "add rule ip filter FORWARD iifname vti0 oifname $PRIMARY_DEV accept"
+              nft "add rule ip filter FORWARD iifname $PRIMARY_DEV  oifname vti0 accept"
               nft "add rule ip filter FORWARD ct state related,established accept"
 
               # Persist nft rules
-              nft list ruleset > /etc/sysconfig/nftables.conf
+              nft list ruleset > /etc/nftables.conf
               systemctl enable --now nftables
 
               echo "ICE simulator (VTI) ready. EIP=${EipPublic}"
