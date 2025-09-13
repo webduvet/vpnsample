@@ -239,6 +239,11 @@ Resources:
               modprobe ip_vti || true
               modprobe xfrm_user || true
 
+              ip route flush table 220 || true
+              ip rule del table 220 2>/dev/null || true
+              ip rule del fwmark 42/0xffffffff table 220 2>/dev/null || true
+
+
               # Libreswan VTI config (route-based)
               cat >/etc/ipsec.d/vgw.conf <<EOF
               config setup
@@ -364,16 +369,68 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           set -euxo pipefail
+
+          # Base updates + nginx
           dnf -y update || true
-          dnf -y install python3
+          dnf -y install nginx
+
           # (Optional) relax rp_filter in case of asymmetric return
           cat >/etc/sysctl.d/99-ice-backend.conf <<'EOF'
           net.ipv4.conf.all.rp_filter=0
           net.ipv4.conf.default.rp_filter=0
           EOF
           sysctl --system
-          cd /root
-          nohup python3 -m http.server ${BackendDemoPort} >/var/log/http-demo.log 2>&1 &
+
+          # Simple content directory (optional)
+          mkdir -p /var/www/backend-demo
+          printf 'Backend demo up on %s\n' "$(hostname -f)" >/var/www/backend-demo/index.txt
+
+          # Remove default vhost on :80 to avoid confusion
+          rm -f /etc/nginx/conf.d/default.conf || true
+
+          # Minimal plain-text responder on ${BackendDemoPort}
+          cat >/etc/nginx/conf.d/backend_demo.conf <<'EOF'
+          server {
+            listen ${BackendDemoPort} default_server;
+            server_name _;
+            access_log /var/log/nginx/backend_access.log;
+            error_log  /var/log/nginx/backend_error.log;
+
+            # Always reply in plain text
+            default_type text/plain;
+
+            # Health checks
+            location = /health { return 200 "ok\n"; }
+            location = /ping   { return 200 "pong\n"; }
+
+            # Echo basic request info (handy for path/args testing)
+            location /info {
+              return 200 "host: $hostname
+          method: $request_method
+          uri: $request_uri
+          args: $args
+          client: $remote_addr
+          ua: $http_user_agent
+          ";
+            }
+
+            # Root: short banner
+            location = / {
+              return 200 "ICE backend demo on $hostname (${BackendDemoPort})
+          Try /health, /ping, or /info
+          ";
+            }
+
+            # Optional: serve static files under /static/
+            location /static/ {
+              alias /var/www/backend-demo/;
+              autoindex on;
+            }
+          }
+          EOF
+
+          nginx -t
+          systemctl enable --now nginx
 
   InstanceRole:
     Type: AWS::IAM::Role

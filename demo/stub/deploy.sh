@@ -6,8 +6,8 @@ REGION=eu-west-1                # or your region
 PROFILE=dev                     # omit if using default profile
 
 # From your hub VPN config download (the VGW config):
-TUN1_OUTSIDE_IP=52.211.164.164   # <-- replace with "Outside IP Address" for Tunnel 1
-TUN2_OUTSIDE_IP=54.217.2.73   # <-- replace with "Outside IP Address" for Tunnel 2
+TUN1_OUTSIDE_IP=34.241.135.157   # <-- replace with "Outside IP Address" for Tunnel 1
+TUN2_OUTSIDE_IP=54.154.160.81   # <-- replace with "Outside IP Address" for Tunnel 2
 
 # Optional: prefixes/port (defaults shown)
 ICE_PUBLIC_PREFIX=203.0.113.0/24
@@ -23,8 +23,8 @@ RIGHT_SUBNET=203.0.113.0/24
 # read -s -p "Enter PSK for Tunnel 2: " PSK2; echo
 #
 # simulated only Mahwah
-PSK1=jpLjsf7DeDTMVagrCjXOjCX7LiL7baG5dgYREVbafjNOupyY
-PSK2=k3NSuR5Iskoj5MElebh9WdsQdZH2j6JVX3j75rZVAedkE1Tl
+PSK1=k317jbKQXmGMCnzdfxz3Gtx4eKi55yWPJHvHA1CbteHOo8pe
+PSK2=eMqNJ1MtXSzY6D2nZn8X2J6O8v8FDN9w5WqNgEtNOiOEKHBz
 
 
 echo "Starting deployment script..."
