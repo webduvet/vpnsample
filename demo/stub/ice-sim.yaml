@@ -273,6 +273,7 @@ Resources:
                 leftsubnet=0.0.0.0/0
                 rightsubnet=0.0.0.0/0
                 type=tunnel
+                overlapip=yes
 
               conn vgw1
                 also=%default
