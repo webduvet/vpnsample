@@ -368,72 +368,42 @@ Resources:
           GroupSet: [!Ref SgBackend]
       Tags:
         - { Key: Name, Value: ICE-Sim-Backend }
+      # --- Paste the corrected UserData block from above here ---
       UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -euxo pipefail
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euxo pipefail
 
-          # Base updates + nginx
-          dnf -y update || true
-          dnf -y install nginx
+            # 1. Write the custom Python API server script to a file
+            cat > /home/ec2-user/server.py <<EOF
+            from http.server import BaseHTTPRequestHandler, HTTPServer
 
-          # (Optional) relax rp_filter in case of asymmetric return
-          cat >/etc/sysctl.d/99-ice-backend.conf <<'EOF'
-          net.ipv4.conf.all.rp_filter=0
-          net.ipv4.conf.default.rp_filter=0
-          EOF
-          sysctl --system
+            # Get the port from the CloudFormation parameter
+            port = ${BackendDemoPort}
 
-          # Simple content directory (optional)
-          mkdir -p /var/www/backend-demo
-          printf 'Backend demo up on %s\n' "$(hostname -f)" >/var/www/backend-demo/index.txt
+            class ApiServer(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    # Respond with a 200 OK status
+                    self.send_response(200)
+                    
+                    # Set the content type to plain text
+                    self.send_header('Content-type', 'text/plain')
+                    self.end_headers()
+                    
+                    # Write the raw string response
+                    self.wfile.write(b"hello from resource 1")
 
-          # Remove default vhost on :80 to avoid confusion
-          rm -f /etc/nginx/conf.d/default.conf || true
+            # Start the server
+            with HTTPServer(('', port), ApiServer) as httpd:
+                print(f"Serving API on port {port}")
+                httpd.serve_forever()
+            EOF
 
-          # Minimal plain-text responder on ${BackendDemoPort}
-          cat >/etc/nginx/conf.d/backend_demo.conf <<'EOF'
-          server {
-            listen ${BackendDemoPort} default_server;
-            server_name _;
-            access_log /var/log/nginx/backend_access.log;
-            error_log  /var/log/nginx/backend_error.log;
+            # 2. Start the custom server in the background
+            nohup python3 /home/ec2-user/server.py > /home/ec2-user/python-server.log 2>&1 &
 
-            # Always reply in plain text
-            default_type text/plain;
-
-            # Health checks
-            location = /health { return 200 "ok\n"; }
-            location = /ping   { return 200 "pong\n"; }
-
-            # Echo basic request info (handy for path/args testing)
-            location /info {
-              return 200 "host: $hostname
-          method: $request_method
-          uri: $request_uri
-          args: $args
-          client: $remote_addr
-          ua: $http_user_agent
-          ";
-            }
-
-            # Root: short banner
-            location = / {
-              return 200 "ICE backend demo on $hostname (${BackendDemoPort})
-          Try /health, /ping, or /info
-          ";
-            }
-
-            # Optional: serve static files under /static/
-            location /static/ {
-              alias /var/www/backend-demo/;
-              autoindex on;
-            }
-          }
-          EOF
-
-          nginx -t
-          systemctl enable --now nginx
+          - BackendDemoPort: !Ref BackendDemoPort
 
   InstanceRole:
     Type: AWS::IAM::Role
