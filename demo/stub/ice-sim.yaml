@@ -370,40 +370,41 @@ Resources:
         - { Key: Name, Value: ICE-Sim-Backend }
       # --- Paste the corrected UserData block from above here ---
       UserData:
-        Fn::Base64: !Sub
-          - |
-            #!/bin/bash
-            set -euxo pipefail
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -euxo pipefail
 
-            # 1. Write the custom Python API server script to a file
-            cat > /home/ec2-user/server.py <<EOF
-            from http.server import BaseHTTPRequestHandler, HTTPServer
+              # 1. Write the custom Python API server script to a file
+              cat > /home/ec2-user/server.py <<EOF
+              from http.server import BaseHTTPRequestHandler, HTTPServer
 
-            # Get the port from the CloudFormation parameter
-            port = ${BackendDemoPort}
+              # Get the port from the CloudFormation parameter
+              port = ${BackendDemoPort}
 
-            class ApiServer(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    # Respond with a 200 OK status
-                    self.send_response(200)
-                    
-                    # Set the content type to plain text
-                    self.send_header('Content-type', 'text/plain')
-                    self.end_headers()
-                    
-                    # Write the raw string response
-                    self.wfile.write(b"hello from resource 1")
+              class ApiServer(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      # Respond with a 200 OK status
+                      self.send_response(200)
+                      
+                      # Set the content type to plain text
+                      self.send_header('Content-type', 'text/plain')
+                      self.end_headers()
+                      
+                      # Write the raw string response
+                      self.wfile.write(b"hello from resource 1")
 
-            # Start the server
-            with HTTPServer(('', port), ApiServer) as httpd:
-                print(f"Serving API on port {port}")
-                httpd.serve_forever()
-            EOF
+              # Start the server
+              with HTTPServer(('', port), ApiServer) as httpd:
+                  print(f"Serving API on port {port}")
+                  httpd.serve_forever()
+              EOF
 
-            # 2. Start the custom server in the background
-            nohup python3 /home/ec2-user/server.py > /home/ec2-user/python-server.log 2>&1 &
+              # 2. Start the custom server in the background
+              nohup python3 /home/ec2-user/server.py > /home/ec2-user/python-server.log 2>&1 &
 
-          - BackendDemoPort: !Ref BackendDemoPort
+            - BackendDemoPort: !Ref BackendDemoPort
 
   InstanceRole:
     Type: AWS::IAM::Role
