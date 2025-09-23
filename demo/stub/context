@@ -1,0 +1,55 @@
+ICE / Blacknight
+have their services accessible only via VPN.
+
+they gave us cidr blocks of public IPs they use for their services.
+
+our solution (in AWS):
+Site to site VPN as following:
+
+Vpc called VpnHub:
+Api GW - public - secured with api token.
+2x AZ and, 2x Private subnet, 2x private NAT.
+VGW attached VPN. 
+Lambda forwarder (not true proxy) attached to VPC (two private subnets)
+
+api gw endpoint is consumed by sbaas service(not part of this solution) with POST request passing body of this shape:
+(plus some other values)
+```
+{
+	"endpoint": "https://some.domain.1234ice.com",
+	"agentOptions": {
+		"keepAlive": true,
+		"maxSockets": 10,
+	}
+}
+
+```
+
+In order to test our Site to site VPN setup I have build a simulated vpn device in separate VPC called VpnSim
+it contains:
+- EC2 instance running libreswan to simulate the VPN on ICEs side.
+
+- EC2 backend instance to simulate the backend behind vpn. (with private address 10.200.1.246)
+python server is running on port 8080
+
+for sumulation I don't use actual cidr block but testing cidr 203.0.113.0/24 mimick the ICEs cidr block they gave us.
+
+all routing at the moment does work if we use IP address to reach BE service:
+
+{
+	"endpoint": "https://203.0.113.246:8080",
+	"agentOptions": {
+		"keepAlive": true,
+		"maxSockets": 10,
+	}
+}
+
+
+I want to extend the testing environment for the test purpose and education purpose
+ICE/Blacknight will most likelly use FQDN e.g. https://some.domain.1234ice.com, and private DNS over vpn which resolve in an IP belonging to given cidr block.
+
+I want to simulate this:
+
+setup private DNS on the sim accound. 
+
+in Vpn Hub I want to have some private DNS so the lambda can query https://some.domain.1234ice.com.

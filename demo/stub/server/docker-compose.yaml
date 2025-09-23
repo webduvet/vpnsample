@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+sample:
+build: .
+image: sample-vpn-backend:latest
+container_name: sample-vpn-backend
+environment:
+- ENV=dev
+- REGION=eu-west-1
+ports:
+- "8080:8080" # keep SG + NACL private (VPN only)
+restart: unless-stopped
